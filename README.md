@@ -87,7 +87,7 @@ The tests cover: URL normalization, SSRF (IP classes, DNS rebinding at connect t
 
 ## API
 
-All `/api/v1/*` routes need a signed-in member (`Authorization: Bearer <Supabase access token>`) or the API key (`X-API-Key`). Write endpoints need the editor role, and deleting sources or managing the team needs admin (see [Accounts and roles](#accounts-and-roles)). `/health`, `/health/ready` and `/metrics` stay open for probes.
+All `/api/v1/*` routes need a signed-in member (`Authorization: Bearer <Supabase access token>`) or the API key (`X-API-Key`). Write endpoints need the editor role, and deleting sources or managing the team needs admin (see [Workspaces, accounts and roles](#workspaces-accounts-and-roles)). `/health`, `/health/ready` and `/metrics` stay open for probes.
 
 ```bash
 H='X-API-Key: change-me'
@@ -110,27 +110,42 @@ curl -H "$H" -H 'content-type: application/json' localhost:8000/api/v1/debug/ext
 | `GET /crawls`, `GET /crawls/{id}`, `POST /crawls/{id}/cancel` | Jobs, stats and cooperative cancel |
 | `GET /articles` | List and search: `q`, `source_id`, `language`, `category`, `since`, `until`, `min_confidence`, `include_duplicates`, `sort=published\|relevance\|created` |
 | `GET /articles/{id}` / `/duplicates` / `/raw` | Detail with body, linked duplicates, stored raw HTML (served as sandboxed `text/plain`) |
-| `GET /me`, `GET/POST /members`, `PATCH/DELETE /members/{id}` | The signed-in person and their role; team management (admin) |
+| `GET /me`, `POST /workspaces` | The signed-in person and their workspaces; create a workspace |
+| `GET/PATCH/DELETE /workspace` | The current workspace: usage and limits; rename or delete (admin) |
+| `GET/POST /members`, `PATCH/DELETE /members/{id}` | Team management in the current workspace (admin) |
 | `GET /stats` | Dashboard aggregates: totals, last-24h pipeline, articles per day (UTC), languages, job outcomes, per-source health |
 | `POST /debug/extract` | Full extraction trace for a URL or supplied HTML: each strategy's candidates, timings, merged field sources, classifier reasons, fingerprints, discovered links. Options: `render`, `use_llm`, `include_html` |
 | `GET /debug/robots?url=`, `GET /debug/normalize?url=` | robots.txt decision and URL normalization |
 
-## Accounts and roles
+## Workspaces, accounts and roles
 
-People sign in with their own email and password (Supabase Auth). Supabase proves *who* someone is; Newsforge's `members` table decides *what they can do*.
+Newsforge is multi-tenant. Each **workspace** is a team's private space with its own sources, crawls, articles and members. Nothing is shared between workspaces: listings, search, stats, duplicate detection and the HTTP page cache are all scoped to one workspace.
 
-| Role | Can |
+- **Signing up:** anyone can create an account (email and password through Supabase Auth). On first sign-in they join every workspace that invited their email. If there were no invitations, they get a new workspace of their own as its admin.
+- **Teams:** admins invite people by email from the Team page and pick their role. People in several workspaces switch between them in the sidebar, and can create up to `MAX_OWNED_WORKSPACES` (default 3) of their own.
+- **The original workspace:** data that existed before workspaces lives in "Newsforge". Emails in `ADMIN_EMAILS` become its admins.
+
+| Role (per workspace) | Can |
 | --- | --- |
 | Viewer | Read the dashboard, sources, crawls and articles |
 | Editor | Also add and edit sources, start and cancel crawls, and use the extraction debugger |
-| Admin | Also delete sources and manage the team |
+| Admin | Also delete sources, manage the team, and rename or delete the workspace |
 
-- **Joining:** an admin invites an email on the Team page. That person creates an account with the same email, confirms it, and has access straight away. Anyone else who signs up sees "you're not on the team yet", and the API refuses them (403).
-- **First admin:** emails in `ADMIN_EMAILS` become admins on their first sign-in.
-- **Safety:** at least one admin must always remain. Crawls record who started them.
-- **How tokens are checked:** the API verifies Supabase access tokens (ES256) against the project's public JWKS, checking signature, expiry, issuer and audience. No Supabase secret is stored anywhere.
-- **Machine access:** `X-API-Key: $API_KEY` still works for scripts and automation, and acts as an admin.
-- **Without Supabase:** leave `SUPABASE_URL` and the `VITE_SUPABASE_*` values empty and the UI falls back to API-key sign-in. If neither `SUPABASE_URL` nor `API_KEY` is set, the API is open, which is only meant for local development.
+**Limits per workspace.** These are defaults; each `workspaces` row can override them, with NULL meaning "use the default".
+
+| Setting | Default | What it limits |
+| --- | --- | --- |
+| `WORKSPACE_MAX_SOURCES` | 10 | Sources in the workspace |
+| `WORKSPACE_MAX_PAGES_PER_DAY` | 500 | Every network fetch: crawled pages, feeds, sitemaps and the debugger. Crawls stop with "daily limit" |
+| `WORKSPACE_MAX_PAGES_PER_CRAWL` | 200 | A source's pages per run |
+| `WORKSPACE_MIN_CRAWL_INTERVAL_MINUTES` | 30 | How often a source may be scheduled |
+| `WORKSPACE_MAX_CONCURRENT_CRAWLS` | 2 | Crawls running at once |
+| `WORKSPACE_LLM_CALLS_PER_DAY` | 25 | LLM fallback extractions |
+| `WORKSPACE_MAX_MEMBERS` | 25 | Members, including pending invitations |
+
+Usage resets at midnight UTC and is shown on the Workspace page. Over-limit requests get HTTP 429 with a plain explanation. The scheduler skips a workspace for the round while it's at a limit. Per-site politeness (robots.txt, rate limits) stays global, so two workspaces crawling the same site don't double the load on it.
+
+**How requests are scoped:** the UI sends `X-Workspace-Id` with every request; without it the API uses the person's first workspace. The API verifies Supabase access tokens (ES256) against the project's public JWKS, checking signature, expiry, issuer and audience, so no Supabase secret is stored. `X-API-Key: $API_KEY` still works for automation, as an admin of whichever workspace the request names (default: the original). Without `SUPABASE_URL` and the `VITE_SUPABASE_*` values the UI falls back to API-key sign-in.
 
 **Supabase dashboard settings (one-time):**
 - *Authentication → URL Configuration:* set **Site URL** to your web URL, and add it with `/**` under **Redirect URLs**, so confirmation and reset links come back to the app.
