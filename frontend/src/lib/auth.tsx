@@ -40,6 +40,10 @@ function friendly(err: { message?: string; code?: string } | null): Error {
   if (/invalid login credentials/i.test(msg)) return new Error('That email and password don’t match. Check them and try again.')
   if (/email not confirmed/i.test(msg)) return new Error('Confirm your email first: open the link we sent you, then sign in.')
   if (/password should be at least/i.test(msg)) return new Error('Use a password with at least 8 characters.')
+  if (err?.code === 'over_email_send_rate_limit' || /email rate limit/i.test(msg))
+    return new Error(
+      'We couldn’t send the confirmation email because the email service has reached its hourly limit. Try again later, or ask your Newsforge admin to check the email settings.',
+    )
   if (/rate limit|too many/i.test(msg)) return new Error('Too many attempts. Wait a few minutes and try again.')
   if (/same password|different from the old/i.test(msg)) return new Error('Choose a password you haven’t used before.')
   return new Error(msg || 'Something went wrong. Try again.')
