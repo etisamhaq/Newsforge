@@ -1,0 +1,14 @@
+# Railway config for the Celery worker (Settings > Config-as-code > railway/worker.toml).
+# Runs crawls (with Chromium for JavaScript pages) and the embedded beat scheduler,
+# so keep exactly one replica.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "docker/Dockerfile"
+watchPatterns = ["app/**", "docker/**", "pyproject.toml", "railway/worker.toml"]
+
+[deploy]
+startCommand = "celery -A app.workers.celery_app worker -B -Q crawl,default --concurrency=2 --loglevel=INFO --schedule=/tmp/celerybeat-schedule"
+restartPolicyType = "ALWAYS"
+
+[deploy.multiRegionConfig."asia-southeast1-eqsg3a"]
+numReplicas = 1
