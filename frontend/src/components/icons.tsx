@@ -117,3 +117,9 @@ export const IconWarning = (p: IconProps) => (
     <path d="M12 4 2.5 20h19zM12 10v4M12 17v.5" />
   </Icon>
 )
+export const IconTeam = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="9" cy="8" r="3.5" />
+    <path d="M2.5 19.5c.8-3.4 3.4-5.5 6.5-5.5s5.7 2.1 6.5 5.5M16 4.8a3.5 3.5 0 0 1 0 6.4M18.5 14.4c1.5.9 2.6 2.7 3 5.1" />
+  </Icon>
+)

@@ -1900,3 +1900,88 @@ input[type='checkbox'] {
     fill: CanvasText;
   }
 }
+
+/* ---------------------------------------------------------------- accounts & team */
+
+.account {
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--rule);
+  font-size: var(--t-sm);
+}
+
+.account-email {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--t-sm);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  color: var(--accent-hover);
+}
+
+.auth-switch {
+  margin-top: var(--space-5);
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.auth-note {
+  margin-top: var(--space-4);
+}
+
+.login-panel .auth-note + .btn {
+  margin-top: var(--space-5);
+}
+
+.role-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.role-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-m);
+  cursor: pointer;
+}
+
+.role-option input {
+  margin-top: 4px;
+  accent-color: var(--accent);
+}
+
+.role-option.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.table select {
+  width: auto;
+  min-height: 32px;
+  padding: 2px var(--space-2);
+  font-size: var(--t-sm);
+}

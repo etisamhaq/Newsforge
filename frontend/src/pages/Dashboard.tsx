@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import { fmtNumber, fmtRelative, fmtTime, languageName } from '../lib/format'
 import { useSourceNames } from '../lib/hooks'
 import type { JobStatus, Stats } from '../lib/types'
@@ -126,6 +127,7 @@ function SourcesHealth({ stats }: { stats: Stats }) {
 }
 
 export function Dashboard() {
+  const { can } = useAuth()
   const { data: stats, error, refetch, isPending } = useQuery({
     queryKey: ['stats'],
     queryFn: () => api.stats(14),
@@ -145,9 +147,11 @@ export function Dashboard() {
             : undefined
         }
         actions={
-          <Link to="/sources?new=1" className="btn btn-primary">
-            Add source
-          </Link>
+          can('editor') && (
+            <Link to="/sources?new=1" className="btn btn-primary">
+              Add source
+            </Link>
+          )
         }
       />
       {isPending && <Spinner />}

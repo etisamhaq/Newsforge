@@ -1,5 +1,23 @@
 // Mirrors the backend's Pydantic schemas (app/schemas.py).
 
+export type RoleName = 'viewer' | 'editor' | 'admin'
+
+export interface Me {
+  email: string | null
+  role: RoleName
+  via: 'user' | 'api_key' | 'open'
+}
+
+export interface Member {
+  id: number
+  email: string
+  role: RoleName
+  joined: boolean
+  invited_by: string | null
+  last_seen_at: string | null
+  created_at: string
+}
+
 export type RenderMode = 'never' | 'auto' | 'always'
 export type JobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 
@@ -59,6 +77,7 @@ export interface CrawlJob {
   source_id: number
   status: JobStatus
   trigger: string
+  triggered_by: string | null
   task_id: string | null
   created_at: string
   started_at: string | null

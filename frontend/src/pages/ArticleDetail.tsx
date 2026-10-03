@@ -1,6 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import { fmtDateTime, fmtNumber, languageName } from '../lib/format'
 import { useSourceNames } from '../lib/hooks'
 import { useToast } from '../components/toast'
@@ -32,6 +33,7 @@ export function ArticleDetail() {
   const id = Number(useParams().id)
   const names = useSourceNames()
   const notify = useToast()
+  const { can } = useAuth()
   const { data: a, error, refetch, isPending } = useQuery({ queryKey: ['article', id], queryFn: () => api.article(id) })
   const dupes = useQuery({ queryKey: ['article', id, 'duplicates'], queryFn: () => api.duplicates(id) })
 
@@ -140,9 +142,11 @@ export function ArticleDetail() {
               </tbody>
             </table>
             <div className="button-row">
-              <Link className="btn btn-quiet btn-small" to={`/debug?url=${encodeURIComponent(a.url)}`}>
-                Re-run extraction
-              </Link>
+              {can('editor') && (
+                <Link className="btn btn-quiet btn-small" to={`/debug?url=${encodeURIComponent(a.url)}`}>
+                  Re-run extraction
+                </Link>
+              )}
               <button type="button" className="btn btn-quiet btn-small" onClick={() => raw.mutate()} disabled={raw.isPending}>
                 View raw HTML
               </button>

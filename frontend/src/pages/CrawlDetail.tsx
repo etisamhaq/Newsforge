@@ -1,6 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import { fmtDateTime, fmtDuration, fmtNumber, stopReasonLabel } from '../lib/format'
 import { useSourceNames } from '../lib/hooks'
 import { useToast } from '../components/toast'
@@ -11,6 +12,7 @@ export function CrawlDetail() {
   const names = useSourceNames()
   const queryClient = useQueryClient()
   const notify = useToast()
+  const { can } = useAuth()
   const { data: job, error, refetch, isPending } = useQuery({
     queryKey: ['crawl', id],
     queryFn: () => api.crawl(id),
@@ -56,10 +58,11 @@ export function CrawlDetail() {
         intro={
           <>
             {job.trigger === "scheduled" ? "Scheduled crawl of " : "Manual crawl of "}<SourceLink id={job.source_id} names={names} />
+            {job.triggered_by ? `, started by ${job.triggered_by}` : null}
           </>
         }
         actions={
-          active && (
+          active && can('editor') && (
             <button type="button" className="btn btn-quiet" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
               Cancel crawl
             </button>

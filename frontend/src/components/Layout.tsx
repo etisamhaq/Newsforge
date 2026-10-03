@@ -14,15 +14,20 @@ import {
   IconSignOut,
   IconSources,
   IconSun,
+  IconTeam,
 } from './icons'
+import type { RoleName } from '../lib/types'
 
-const NAV = [
-  { to: '/', label: 'Dashboard', icon: IconDashboard, end: true },
-  { to: '/sources', label: 'Sources', icon: IconSources },
-  { to: '/crawls', label: 'Crawls', icon: IconCrawls },
-  { to: '/articles', label: 'Articles', icon: IconArticles },
-  { to: '/debug', label: 'Extraction debugger', icon: IconDebug },
+const NAV: { to: string; label: string; icon: typeof IconDashboard; end?: boolean; role: RoleName }[] = [
+  { to: '/', label: 'Dashboard', icon: IconDashboard, end: true, role: 'viewer' },
+  { to: '/sources', label: 'Sources', icon: IconSources, role: 'viewer' },
+  { to: '/crawls', label: 'Crawls', icon: IconCrawls, role: 'viewer' },
+  { to: '/articles', label: 'Articles', icon: IconArticles, role: 'viewer' },
+  { to: '/debug', label: 'Extraction debugger', icon: IconDebug, role: 'editor' },
+  { to: '/team', label: 'Team', icon: IconTeam, role: 'admin' },
 ]
+
+const ROLE_LABEL: Record<RoleName, string> = { viewer: 'Viewer', editor: 'Editor', admin: 'Admin' }
 
 function ServiceStatus() {
   const { data } = useQuery({ queryKey: ['readiness'], queryFn: api.readiness, refetchInterval: 30_000 })
@@ -40,7 +45,7 @@ function ServiceStatus() {
 }
 
 export function Layout() {
-  const { signOut } = useAuth()
+  const { signOut, can, me } = useAuth()
   const { theme, toggle } = useTheme()
   const [menuOpen, setMenuOpen] = useState(false)
 
@@ -69,7 +74,7 @@ export function Layout() {
           </button>
         </div>
         <nav id="primary-nav" aria-label="Primary" className="nav">
-          {NAV.map(({ to, label, icon: Icon, end }) => (
+          {NAV.filter((n) => can(n.role)).map(({ to, label, icon: Icon, end }) => (
             <NavLink key={to} to={to} end={end} className="nav-link" onClick={() => setMenuOpen(false)}>
               <Icon />
               {label}
@@ -78,11 +83,17 @@ export function Layout() {
         </nav>
         <div className="rail-footer">
           <ServiceStatus />
+          {me && (
+            <p className="account">
+              <span className="account-email">{me.email ?? (me.via === 'api_key' ? 'API key' : 'Local access')}</span>
+              <span className="sub">{ROLE_LABEL[me.role]}</span>
+            </p>
+          )}
           <div className="rail-actions">
             <button type="button" className="icon-btn" onClick={toggle} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>
               {theme === 'dark' ? <IconSun /> : <IconMoon />}
             </button>
-            <button type="button" className="btn btn-quiet btn-small" onClick={signOut}>
+            <button type="button" className="btn btn-quiet btn-small" onClick={() => void signOut()}>
               <IconSignOut size={16} />
               Sign out
             </button>

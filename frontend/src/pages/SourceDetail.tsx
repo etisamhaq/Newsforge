@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import { fmtDateTime, fmtDuration, fmtNumber, fmtRelative, intervalLabel, languageName } from '../lib/format'
 import { useStartCrawl } from '../lib/useStartCrawl'
 import { SourceForm } from '../components/SourceForm'
@@ -19,6 +20,7 @@ export function SourceDetail() {
   const [editing, setEditing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const startCrawl = useStartCrawl()
+  const { can } = useAuth()
 
   const source = useQuery({ queryKey: ['source', id], queryFn: () => api.source(id) })
   const jobs = useQuery({
@@ -63,6 +65,7 @@ export function SourceDetail() {
         title={s.name}
         intro={<ExternalLink href={s.base_url}>{s.base_url}</ExternalLink>}
         actions={
+          can('editor') && (
           <>
             <button type="button" className="btn btn-quiet" onClick={() => setEditing(true)}>
               Edit
@@ -72,6 +75,7 @@ export function SourceDetail() {
               Crawl now
             </button>
           </>
+          )
         }
       />
 
@@ -114,14 +118,18 @@ export function SourceDetail() {
             <dt>Raw HTML</dt>
             <dd>{s.store_raw_html ? 'Kept' : 'Not kept'}</dd>
           </dl>
-          <div className="button-row">
-            <button type="button" className="btn btn-quiet btn-small" onClick={() => toggle.mutate(!s.enabled)} disabled={toggle.isPending}>
-              {s.enabled ? 'Pause scheduled crawling' : 'Resume scheduled crawling'}
-            </button>
-            <button type="button" className="btn btn-danger-quiet btn-small" onClick={() => setConfirmDelete(true)}>
-              Delete source
-            </button>
-          </div>
+          {can('editor') && (
+            <div className="button-row">
+              <button type="button" className="btn btn-quiet btn-small" onClick={() => toggle.mutate(!s.enabled)} disabled={toggle.isPending}>
+                {s.enabled ? 'Pause scheduled crawling' : 'Resume scheduled crawling'}
+              </button>
+              {can('admin') && (
+                <button type="button" className="btn btn-danger-quiet btn-small" onClick={() => setConfirmDelete(true)}>
+                  Delete source
+                </button>
+              )}
+            </div>
+          )}
         </section>
 
         <section aria-labelledby="jobs-title">

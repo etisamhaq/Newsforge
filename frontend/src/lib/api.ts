@@ -1,3 +1,4 @@
+import { supabase } from './supabase'
 import type {
   ArticleDetail,
   ArticlePage,
@@ -5,7 +6,10 @@ import type {
   ArticleSummary,
   CrawlJob,
   ExtractionTrace,
+  Me,
+  Member,
   Paginated,
+  RoleName,
   Readiness,
   Source,
   SourceInput,
@@ -101,9 +105,15 @@ export async function request<T>(
   path: string,
   options: { query?: Query; body?: unknown; key?: string; raw?: boolean; signal?: AbortSignal } = {},
 ): Promise<T> {
-  const key = options.key ?? getStoredKey()
   const headers: Record<string, string> = { Accept: 'application/json' }
-  if (key) headers['X-API-Key'] = key
+  if (supabase && !options.key) {
+    // Person sign-in: send the current (auto-refreshed) Supabase access token.
+    const { data } = await supabase.auth.getSession()
+    if (data.session) headers.Authorization = `Bearer ${data.session.access_token}`
+  } else {
+    const key = options.key ?? getStoredKey()
+    if (key) headers['X-API-Key'] = key
+  }
   if (options.body !== undefined) headers['Content-Type'] = 'application/json'
 
   let res: Response
@@ -136,7 +146,12 @@ export async function request<T>(
 // --- endpoints -------------------------------------------------------------------
 
 export const api = {
-  verifyKey: (key: string) => request<Paginated<Source>>('GET', '/api/v1/sources', { query: { limit: 1 }, key }),
+  verifyKey: (key: string) => request<Me>('GET', '/api/v1/me', { key }),
+  me: () => request<Me>('GET', '/api/v1/me'),
+  members: () => request<Member[]>('GET', '/api/v1/members'),
+  inviteMember: (body: { email: string; role: RoleName }) => request<Member>('POST', '/api/v1/members', { body }),
+  changeRole: (id: number, role: RoleName) => request<Member>('PATCH', `/api/v1/members/${id}`, { body: { role } }),
+  removeMember: (id: number) => request<void>('DELETE', `/api/v1/members/${id}`),
   readiness: () =>
     fetch(buildUrl('/health/ready')).then(async (r) => (await r.json()) as Readiness).catch(
       (): Readiness => ({ status: 'degraded', checks: { api: 'unreachable' } }),

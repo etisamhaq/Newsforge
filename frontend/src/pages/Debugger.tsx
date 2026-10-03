@@ -2,9 +2,10 @@ import { useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import { fmtDateTime, fmtNumber, languageName } from '../lib/format'
 import type { ExtractionTrace } from '../lib/types'
-import { ErrorNotice, ExternalLink, Meter, PageHeader } from '../components/ui'
+import { EmptyState, ErrorNotice, ExternalLink, Meter, PageHeader } from '../components/ui'
 
 const STRATEGY_LABELS: Record<string, string> = {
   jsonld: 'Structured data (JSON-LD)',
@@ -238,6 +239,10 @@ export function Debugger() {
   const [useLlm, setUseLlm] = useState(false)
   const [render, setRender] = useState(false)
   const run = useMutation({ mutationFn: api.extract })
+  const { can } = useAuth()
+  if (!can('editor')) {
+    return <EmptyState title="Editors only">The debugger fetches live pages, so it needs the editor role. Ask an admin if you need it.</EmptyState>
+  }
 
   const submit = (e: FormEvent) => {
     e.preventDefault()

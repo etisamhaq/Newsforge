@@ -1,6 +1,7 @@
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import { fmtNumber, fmtRelative, intervalLabel } from '../lib/format'
 import { useStartCrawl } from '../lib/useStartCrawl'
 import { SourceForm } from '../components/SourceForm'
@@ -10,7 +11,9 @@ import { Dialog, EmptyState, ErrorNotice, PageHeader, Spinner, StatusBadge } fro
 export function Sources() {
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
-  const creating = params.get('new') === '1'
+  const { can } = useAuth()
+  const canEdit = can('editor')
+  const creating = canEdit && params.get('new') === '1'
   const sources = useQuery({ queryKey: ['sources'], queryFn: () => api.sources() })
   const stats = useQuery({ queryKey: ['stats'], queryFn: () => api.stats(14) })
   const startCrawl = useStartCrawl()
@@ -25,9 +28,11 @@ export function Sources() {
         title="Sources"
         intro="News sites Newsforge crawls. Each one runs on its own schedule and limits."
         actions={
-          <button type="button" className="btn btn-primary" onClick={openNew}>
-            Add source
-          </button>
+          canEdit && (
+            <button type="button" className="btn btn-primary" onClick={openNew}>
+              Add source
+            </button>
+          )
         }
       />
       {sources.isPending && <Spinner />}
@@ -36,12 +41,14 @@ export function Sources() {
         <EmptyState
           title="No sources yet"
           action={
-            <button type="button" className="btn btn-primary" onClick={openNew}>
-              Add your first source
-            </button>
+            canEdit && (
+              <button type="button" className="btn btn-primary" onClick={openNew}>
+                Add your first source
+              </button>
+            )
           }
         >
-          Add a news site by its homepage. Feeds and sitemaps are found automatically.
+          {canEdit ? 'Add a news site by its homepage. Feeds and sitemaps are found automatically.' : 'An editor or admin can add news sites to crawl.'}
         </EmptyState>
       )}
       {sources.data && sources.data.items.length > 0 && (
@@ -81,6 +88,7 @@ export function Sources() {
                       {s.last_crawl_at && <span className="sub">{fmtRelative(s.last_crawl_at)}</span>}
                     </td>
                     <td className="actions">
+                      {canEdit && (
                       <button
                         type="button"
                         className="btn btn-quiet btn-small"
@@ -90,6 +98,7 @@ export function Sources() {
                         <IconPlay size={14} />
                         Crawl now
                       </button>
+                      )}
                     </td>
                   </tr>
                 )
