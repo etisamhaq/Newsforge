@@ -6,11 +6,12 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import Depends, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
 from app.api.deps import require_api_key
-from app.api.routes import articles, crawls, debug, health, sources
+from app.api.routes import articles, crawls, debug, health, sources, stats
 from app.config import get_settings
 from app.db.session import dispose_engine
 from app.logging import configure_logging, get_logger
@@ -72,6 +73,19 @@ def create_app() -> FastAPI:
     app.include_router(crawls.router, prefix="/api/v1", dependencies=protected)
     app.include_router(articles.router, prefix="/api/v1", dependencies=protected)
     app.include_router(debug.router, prefix="/api/v1", dependencies=protected)
+    app.include_router(stats.router, prefix="/api/v1", dependencies=protected)
+
+    # Only needed when the web UI is served from a different origin than the API.
+    origins = get_settings().cors_origins
+    if origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_methods=["GET", "POST", "PATCH", "DELETE"],
+            allow_headers=["X-API-Key", "Content-Type", "X-Request-ID"],
+            expose_headers=["X-Request-ID"],
+            max_age=600,
+        )
     return app
 
 

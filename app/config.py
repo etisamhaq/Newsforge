@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = True
     api_key: str | None = Field(default=None, description="If set, required in X-API-Key for /api routes")
+    cors_origins: list[str] = Field(default_factory=list, description='e.g. ["https://newsforge.example.com"]')
 
     # --- infrastructure ---
     database_url: str = "postgresql+asyncpg://crawler:crawler@localhost:5432/crawler"

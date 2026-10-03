@@ -163,3 +163,33 @@ async def test_api_key_required_when_configured(api, monkeypatch):
     assert (await api.get("/api/v1/sources", headers={"X-API-Key": "wrong"})).status_code == 401
     assert (await api.get("/api/v1/sources", headers={"X-API-Key": "s3cret"})).status_code == 200
     assert (await api.get("/health")).status_code == 200  # probes stay open
+
+
+async def test_stats(api):
+    src = (await api.post("/api/v1/sources", json=SOURCE)).json()
+    await api.post(f"/api/v1/sources/{src['id']}/crawl")
+    s = (await api.get("/api/v1/stats", params={"days": 7})).json()
+    assert s["totals"]["articles"] == 3 and s["totals"]["sources"] == 1
+    assert s["last_24h"]["new"] == 3 and s["last_24h"]["fetched"] >= 3
+    assert len(s["articles_per_day"]) == 7 and s["articles_per_day"][-1]["count"] == 3
+    assert s["languages"][0] == {"language": "en", "count": 3}
+    assert s["jobs_by_status"] == {"succeeded": 1}
+    assert s["sources"][0]["articles"] == 3 and s["sources"][0]["last_status"] == "succeeded"
+
+
+async def test_cors_preflight(engine, monkeypatch):
+    import httpx
+
+    from app.api.main import create_app
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "cors_origins", ["https://ui.example.com"])
+    app = create_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.options("/api/v1/sources", headers={"Origin": "https://ui.example.com",
+                                                         "Access-Control-Request-Method": "GET",
+                                                         "Access-Control-Request-Headers": "x-api-key"})
+        assert r.headers["access-control-allow-origin"] == "https://ui.example.com"
+        r = await c.options("/api/v1/sources", headers={"Origin": "https://evil.example",
+                                                         "Access-Control-Request-Method": "GET"})
+        assert "access-control-allow-origin" not in r.headers
