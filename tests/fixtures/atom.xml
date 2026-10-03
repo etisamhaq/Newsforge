@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Example</title>
+<entry><title>Atom story</title><link href="https://news.example.com/2024/05/10/atom-story-here"/><id>tag:x,2024:1</id><updated>2024-05-10T10:00:00Z</updated></entry>
+</feed>

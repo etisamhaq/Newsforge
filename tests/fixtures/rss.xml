@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Daily Example</title><link>https://news.example.com/</link>
+<item><title>City approves sweeping transit plan</title><link>https://news.example.com/2024/05/14/city-approves-transit-plan?utm_source=rss</link><pubDate>Tue, 14 May 2024 08:30:00 GMT</pubDate></item>
+<item><title>Budget vote delayed</title><link>/2024/05/13/budget-vote-delayed-again</link><pubDate>Mon, 13 May 2024 08:30:00 GMT</pubDate></item>
+</channel></rss>
