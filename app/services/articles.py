@@ -38,18 +38,23 @@ class UpsertResult:
 
 
 class ArticleRepository:
-    def __init__(self, session: AsyncSession, search_backend: SearchBackend | None = None):
+    def __init__(self, session: AsyncSession, search_backend: SearchBackend | None = None, *, workspace_id: int):
         self.session = session
+        self.workspace_id = workspace_id  # all lookups and dedup stay inside one workspace
         self.search_backend = search_backend
         self.settings = get_settings()
 
     async def find_by_canonical(self, canonical_url: str) -> Article | None:
         return (
-            await self.session.execute(select(Article).where(Article.canonical_hash == url_hash(canonical_url)))
+            await self.session.execute(select(Article).where(
+                    Article.workspace_id == self.workspace_id, Article.canonical_hash == url_hash(canonical_url)
+                ))
         ).scalar_one_or_none()
 
     async def find_exact_duplicate(self, chash: str, exclude_id: int | None = None) -> Article | None:
-        stmt = select(Article).where(Article.content_hash == chash, Article.duplicate_of_id.is_(None))
+        stmt = select(Article).where(
+            Article.workspace_id == self.workspace_id, Article.content_hash == chash, Article.duplicate_of_id.is_(None)
+        )
         if exclude_id:
             stmt = stmt.where(Article.id != exclude_id)
         return (await self.session.execute(stmt.order_by(Article.id).limit(1))).scalar_one_or_none()
@@ -59,6 +64,7 @@ class ArticleRepository:
         stmt = (
             select(Article)
             .where(
+                Article.workspace_id == self.workspace_id,
                 Article.duplicate_of_id.is_(None),
                 or_(Article.simhash_b0 == b[0], Article.simhash_b1 == b[1],
                     Article.simhash_b2 == b[2], Article.simhash_b3 == b[3]),
@@ -135,6 +141,7 @@ class ArticleRepository:
             outcome, dup_of, distance = "near_duplicate", near[0].id, near[1]
 
         article = Article(
+            workspace_id=self.workspace_id,
             source_id=source_id,
             canonical_url=ex.canonical_url,
             canonical_hash=url_hash(ex.canonical_url),

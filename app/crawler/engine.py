@@ -60,6 +60,8 @@ ARTICLE_REFRESH = timedelta(hours=24)
 class CrawlStats:
     pages_fetched: int = 0
     seed_fetches: int = 0  # feeds / sitemaps / homepage discovery; not counted against max_pages
+    fetches: int = 0  # every request that reached the network (counted against the daily quota)
+    llm_calls: int = 0
     pages_failed: int = 0
     pages_skipped: int = 0
     not_modified: int = 0
@@ -115,6 +117,15 @@ class Frontier:
         return len(self._heap)
 
 
+@dataclass
+class CrawlQuota:
+    """What this crawl may still spend today. None means unlimited."""
+
+    pages_left: int | None = None
+    llm_calls_left: int | None = None
+    max_pages_per_crawl: int | None = None
+
+
 class CrawlEngine:
     def __init__(
         self,
@@ -125,8 +136,11 @@ class CrawlEngine:
         renderer: PlaywrightRenderer | None = None,
         search_backend: SearchBackend | None = None,
         settings: Settings | None = None,
+        quota: CrawlQuota | None = None,
     ):
         self.session_factory = session_factory
+        self.quota = quota or CrawlQuota()
+        self._ws: int | None = None
         self.fetcher = fetcher
         self.pipeline = pipeline or ExtractionPipeline()
         self.renderer = renderer
@@ -159,7 +173,8 @@ class CrawlEngine:
 
     # ------------------------------------------------------------------ page cache
     async def _get_page(self, session: AsyncSession, url: str) -> Page | None:
-        return (await session.execute(select(Page).where(Page.url_hash == url_hash(url)))).scalar_one_or_none()
+        stmt = select(Page).where(Page.workspace_id == self._ws, Page.url_hash == url_hash(url))
+        return (await session.execute(stmt)).scalar_one_or_none()
 
     async def _record_page(
         self, url: str, source_id: int, *, result: FetchResult | None = None, error: str | None = None,
@@ -168,7 +183,8 @@ class CrawlEngine:
         async with self.session_factory() as session:
             page = await self._get_page(session, url)
             if page is None:
-                page = Page(url=url, url_hash=url_hash(url), source_id=source_id, fetch_count=0, failure_count=0)
+                page = Page(workspace_id=self._ws, url=url, url_hash=url_hash(url), source_id=source_id,
+                            fetch_count=0, failure_count=0)
                 session.add(page)
             page.fetch_count += 1
             page.last_fetched_at = utcnow()
@@ -205,6 +221,10 @@ class CrawlEngine:
             stats.pages_skipped += 1
             stats.hosts_unreachable = sorted(set(stats.hosts_unreachable) | {host})
             return None
+        if self.quota.pages_left is not None and self.quota.pages_left <= 0:
+            stats.stopped_reason = "daily_quota"
+            stats.pages_skipped += 1
+            return None
         try:
             result = await self.fetcher.fetch(
                 url,
@@ -216,6 +236,8 @@ class CrawlEngine:
             stats.robots_blocked += 1
             return None
         except (FetchError, BlockedURLError) as exc:
+            if isinstance(exc, FetchError):
+                self._spend_page(stats)
             stats.pages_failed += 1
             stats.errors.append(f"{url}: {exc}")
             if isinstance(exc, FetchError) and exc.reason.startswith("network error"):
@@ -223,6 +245,7 @@ class CrawlEngine:
             await self._record_page(url, source.id, error=str(exc))
             return None
         self._host_failures[host] = 0
+        self._spend_page(stats)
         if seed:
             stats.seed_fetches += 1
         else:
@@ -236,6 +259,11 @@ class CrawlEngine:
             await self._record_page(url, source.id, result=result, error=f"HTTP {result.status_code}")
             return None
         return result
+
+    def _spend_page(self, stats: CrawlStats) -> None:
+        stats.fetches += 1
+        if self.quota.pages_left is not None:
+            self.quota.pages_left -= 1
 
     # ------------------------------------------------------------------ seeding
     async def _seed(self, source: Source, frontier: Frontier, stats: CrawlStats) -> None:
@@ -332,7 +360,12 @@ class CrawlEngine:
     async def _extract(self, source: Source, result: FetchResult, stats: CrawlStats) -> tuple[ExtractionReport, str, bool]:
         html = result.text
         url = result.final_url
-        report = await self.pipeline.run(url, html, result.headers)
+        llm_ok = self.quota.llm_calls_left is None or self.quota.llm_calls_left > 0
+        report = await self.pipeline.run(url, html, result.headers, allow_fallback=llm_ok)
+        if report.used_fallback:
+            stats.llm_calls += 1
+            if self.quota.llm_calls_left is not None:
+                self.quota.llm_calls_left -= 1
         rendered = False
         mode = source.render_mode
         want_render = mode == RenderMode.always.value or (
@@ -342,7 +375,7 @@ class CrawlEngine:
         if want_render and self.renderer is not None and self.settings.playwright_enabled:
             try:
                 final_url, rendered_html = await self.renderer.render(url)
-                rendered_report = await self.pipeline.run(final_url, rendered_html, result.headers)
+                rendered_report = await self.pipeline.run(final_url, rendered_html, result.headers, allow_fallback=False)
                 if rendered_report.article.confidence >= report.article.confidence:
                     report, html, rendered = rendered_report, rendered_html, True
                     stats.rendered += 1
@@ -381,7 +414,7 @@ class CrawlEngine:
         if is_article:
             stats.articles_found += 1
             async with self.session_factory() as session:
-                repo = ArticleRepository(session, self.search_backend)
+                repo = ArticleRepository(session, self.search_backend, workspace_id=self._ws)
                 raw = html.encode("utf-8") if source.store_raw_html else None
                 upsert = await repo.upsert(
                     art, source.id, raw_html=raw,
@@ -424,6 +457,10 @@ class CrawlEngine:
     async def crawl(self, source: Source, job_id: int | None = None) -> CrawlStats:
         s = self.settings
         stats = CrawlStats()
+        self._ws = source.workspace_id
+        max_pages = source.max_pages
+        if self.quota.max_pages_per_crawl is not None:
+            max_pages = min(max_pages, self.quota.max_pages_per_crawl)
         for domain in self._domains(source):
             self.fetcher.set_host_delay(host_of(f"https://{domain}/"), source.min_delay_seconds)
             self.fetcher.set_host_delay(host_of(f"https://www.{domain.removeprefix('www.')}/"), source.min_delay_seconds)
@@ -446,13 +483,18 @@ class CrawlEngine:
                 log.exception("crawl.page_error", url=item.url)
 
         while True:
-            if stats.pages_fetched >= source.max_pages:
+            if stats.pages_fetched >= max_pages:
                 stats.stopped_reason = "max_pages"
+                break
+            if self.quota.pages_left is not None and self.quota.pages_left <= 0:
+                stats.stopped_reason = "daily_quota"
                 break
             if time.monotonic() > deadline:
                 stats.stopped_reason = "time_budget"
                 break
-            budget_left = source.max_pages - stats.pages_fetched - len(in_flight)
+            budget_left = max_pages - stats.pages_fetched - len(in_flight)
+            if self.quota.pages_left is not None:
+                budget_left = min(budget_left, self.quota.pages_left - len(in_flight))
             item = frontier.pop() if len(in_flight) < concurrency and budget_left > 0 else None
             if item is None:
                 if not in_flight:

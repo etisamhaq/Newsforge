@@ -29,8 +29,8 @@ def _article(url, body=TEXT, title="Transit plan", conf=0.9):
                             confidence=conf, article_score=0.9, is_article=True, primary_method="jsonld")
 
 
-async def test_repository_dedup_layers(session):
-    repo = ArticleRepository(session)
+async def test_repository_dedup_layers(session, workspace):
+    repo = ArticleRepository(session, workspace_id=workspace.id)
     r1 = await repo.upsert(_article("https://a.com/story-one"), None)
     assert r1.outcome == "new"
     r2 = await repo.upsert(_article("https://a.com/story-one"), None)
@@ -46,21 +46,21 @@ async def test_repository_dedup_layers(session):
     assert r6.outcome == "new"
 
 
-async def test_worse_extraction_does_not_overwrite(session):
-    repo = ArticleRepository(session)
+async def test_worse_extraction_does_not_overwrite(session, workspace):
+    repo = ArticleRepository(session, workspace_id=workspace.id)
     await repo.upsert(_article("https://a.com/x", conf=0.95), None)
     r = await repo.upsert(_article("https://a.com/x", body="short teaser text", conf=0.3), None)
     assert r.outcome == "unchanged" and r.article.body == TEXT
 
 
-async def test_raw_html_stored_compressed(session):
+async def test_raw_html_stored_compressed(session, workspace):
     import gzip
 
     from sqlalchemy import select
 
     from app.db.models import RawDocument
 
-    repo = ArticleRepository(session)
+    repo = ArticleRepository(session, workspace_id=workspace.id)
     await repo.upsert(_article("https://a.com/raw"), None, raw_html=b"<html>raw</html>", raw_meta={"status_code": 200})
     raw = (await session.execute(select(RawDocument))).scalar_one()
     assert gzip.decompress(raw.content_gzip) == b"<html>raw</html>"

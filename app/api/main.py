@@ -77,7 +77,8 @@ def create_app() -> FastAPI:
     app.include_router(articles.router, prefix="/api/v1", dependencies=protected)
     app.include_router(debug.router, prefix="/api/v1", dependencies=protected)
     app.include_router(stats.router, prefix="/api/v1", dependencies=protected)
-    app.include_router(members.router, prefix="/api/v1", dependencies=protected)
+    # /me and workspace creation work before someone belongs to any workspace; each route declares its own access.
+    app.include_router(members.router, prefix="/api/v1")
 
     # Only needed when the web UI is served from a different origin than the API.
     origins = get_settings().cors_origins
@@ -86,7 +87,7 @@ def create_app() -> FastAPI:
             CORSMiddleware,
             allow_origins=origins,
             allow_methods=["GET", "POST", "PATCH", "DELETE"],
-            allow_headers=["Authorization", "X-API-Key", "Content-Type", "X-Request-ID"],
+            allow_headers=["Authorization", "X-API-Key", "X-Workspace-Id", "Content-Type", "X-Request-ID"],
             expose_headers=["X-Request-ID"],
             max_age=600,
         )

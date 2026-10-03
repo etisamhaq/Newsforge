@@ -18,12 +18,14 @@ for _k in ("API_KEY", "LLM_ENABLED", "PLAYWRIGHT_ENABLED", "SEARCH_BACKEND", "AN
 
 import httpx  # noqa: E402
 import pytest  # noqa: E402
-from sqlalchemy import text  # noqa: E402
+from sqlalchemy import event, text  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 from sqlalchemy.pool import NullPool  # noqa: E402
 
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_sessionmaker, set_engine  # noqa: E402
+
+pytest_plugins = ["tests.auth_fixtures"]
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -56,6 +58,8 @@ async def engine(tmp_path, monkeypatch):
     else:
         # File-backed so concurrent sessions get their own connections (like Postgres).
         eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/test.db", connect_args={"timeout": 30})
+        # Enforce foreign keys (cascades) like Postgres does.
+        event.listen(eng.sync_engine, "connect", lambda conn, _: conn.execute("PRAGMA foreign_keys=ON"))
         async with eng.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     set_engine(eng)
@@ -77,3 +81,13 @@ async def client(engine):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
         yield c
+
+
+@pytest.fixture
+async def workspace(session):
+    from app.db.models import Workspace
+
+    ws = Workspace(name="Test workspace")
+    session.add(ws)
+    await session.commit()
+    return ws

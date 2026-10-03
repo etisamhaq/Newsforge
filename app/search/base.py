@@ -20,6 +20,7 @@ from app.db.models import Article
 
 @dataclass
 class SearchQuery:
+    workspace_id: int | None = None  # always set by the API; None only for internal/admin use
     q: str | None = None
     source_id: int | None = None
     language: str | None = None
@@ -42,6 +43,8 @@ class SearchPage:
 
 
 def apply_filters(stmt: Select, query: SearchQuery) -> Select:
+    if query.workspace_id is not None:
+        stmt = stmt.where(Article.workspace_id == query.workspace_id)
     if query.source_id is not None:
         stmt = stmt.where(Article.source_id == query.source_id)
     if query.language:

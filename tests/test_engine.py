@@ -38,6 +38,15 @@ def build_site(log=None, extra=None):
 
 
 async def make_source(session, **kw) -> Source:
+    from app.db.models import Workspace
+
+    if "workspace_id" not in kw:
+        ws = (await session.execute(select(Workspace).order_by(Workspace.id).limit(1))).scalar_one_or_none()
+        if ws is None:
+            ws = Workspace(name="Test workspace")
+            session.add(ws)
+            await session.flush()
+        kw["workspace_id"] = ws.id
     defaults = dict(name="Example", base_url=f"{HOST}/", domain="news.example.com", allowed_domains=["news.example.com"],
                     start_urls=[], feed_urls=[], sitemap_urls=[], include_patterns=[], exclude_patterns=[],
                     max_pages=50, max_depth=2, min_delay_seconds=0, render_mode="never")

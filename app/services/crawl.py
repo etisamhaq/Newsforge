@@ -9,15 +9,16 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.crawler.engine import CrawlEngine
+from app.crawler.engine import CrawlEngine, CrawlQuota
 from app.crawler.fetcher import Fetcher
 from app.crawler.ratelimit import MemoryRateLimiter, RedisRateLimiter
 from app.db.base import utcnow
-from app.db.models import CrawlJob, JobStatus, Source
+from app.db.models import CrawlJob, JobStatus, Source, Workspace
 from app.db.session import task_session_factory
 from app.logging import get_logger
 from app.metrics import ACTIVE_CRAWLS, CRAWL_DURATION, CRAWL_JOBS
 from app.search.base import get_search_backend
+from app.services.quotas import Limits, active_crawls, add_usage, usage_today
 
 log = get_logger(__name__)
 
@@ -42,7 +43,8 @@ def task_id_for(job_id: int) -> str:
 
 
 async def create_job(session: AsyncSession, source: Source, trigger: str = "manual") -> CrawlJob:
-    job = CrawlJob(source_id=source.id, trigger=trigger, status=JobStatus.pending.value, stats={})
+    job = CrawlJob(workspace_id=source.workspace_id, source_id=source.id, trigger=trigger,
+                   status=JobStatus.pending.value, stats={})
     # Any crawl (manual or scheduled) resets the schedule, so the scheduler doesn't immediately repeat it.
     source.next_crawl_at = utcnow() + timedelta(minutes=max(1, source.crawl_interval_minutes))
     session.add(job)
@@ -68,6 +70,14 @@ async def run_job(job_id: int, *, fetcher: Fetcher | None = None, renderer=None)
             if job.status != JobStatus.pending.value:
                 return job.status
             source = await session.get(Source, job.source_id)
+            workspace = await session.get(Workspace, job.workspace_id)
+            limits = Limits.for_workspace(workspace, settings)
+            used = await usage_today(session, workspace.id)
+            quota = CrawlQuota(
+                pages_left=max(0, limits.max_pages_per_day - used.pages),
+                llm_calls_left=max(0, limits.llm_calls_per_day - used.llm_calls),
+                max_pages_per_crawl=limits.max_pages_per_crawl,
+            )
             job.status = JobStatus.running.value
             job.started_at = utcnow()
             await session.commit()
@@ -98,7 +108,7 @@ async def run_job(job_id: int, *, fetcher: Fetcher | None = None, renderer=None)
             async with session_factory() as s:
                 dialect = s.bind.dialect.name
             engine = CrawlEngine(session_factory, fetcher, renderer=renderer,
-                                 search_backend=get_search_backend(dialect), settings=settings)
+                                 search_backend=get_search_backend(dialect), settings=settings, quota=quota)
             stats = await engine.crawl(source, job_id=job_id)
             status = JobStatus.cancelled.value if stats.stopped_reason == "cancelled" else JobStatus.succeeded.value
         except Exception as exc:  # noqa: BLE001 - recorded on the job
@@ -142,6 +152,7 @@ async def _finish(session_factory, job_id: int, status: str, *, error: str | Non
             job.articles_updated = stats.articles_updated
             job.duplicates = stats.duplicates
             job.stats = stats.as_dict()
+            await add_usage(session, job.workspace_id, pages=stats.fetches, llm_calls=stats.llm_calls)
         source = await session.get(Source, job.source_id)
         if source is not None:
             source.last_crawl_at = job.finished_at
@@ -164,11 +175,22 @@ async def dispatch_due_sources() -> list[int]:
         )
         if settings.is_postgres:
             stmt = stmt.with_for_update(skip_locked=True)
+        workspaces: dict[int, Workspace] = {}
         for source in (await session.execute(stmt)).scalars():
             source.next_crawl_at = now + timedelta(minutes=max(1, source.crawl_interval_minutes))
             if await has_active_job(session, source.id):
                 continue
+            ws = workspaces.get(source.workspace_id) or await session.get(Workspace, source.workspace_id)
+            workspaces[ws.id] = ws
+            limits = Limits.for_workspace(ws, settings)
+            # Respect the workspace's limits: skip this round if it's at its crawl or daily page cap.
+            if await active_crawls(session, ws.id) >= limits.max_concurrent_crawls:
+                continue
+            if (await usage_today(session, ws.id)).pages >= limits.max_pages_per_day:
+                continue
             job = await create_job(session, source, trigger="scheduled")
+            await add_usage(session, ws.id, crawls=1)
+            await session.flush()
             job_ids.append(job.id)
         await session.commit()
     if job_ids:

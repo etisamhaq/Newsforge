@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_editor
+from app.api.deps import Principal, current_workspace, get_session, require_editor
 from app.config import get_settings
 from app.crawler.discovery import discover_feed_links, extract_links
 from app.crawler.fetcher import Fetcher, FetchError, RobotsDisallowed
@@ -16,6 +17,7 @@ from app.crawler.urls import normalize_url
 from app.dedup.hashing import content_hash, simhash
 from app.extraction.pipeline import ExtractionPipeline
 from app.schemas import DebugExtractRequest, _check_url
+from app.services.quotas import add_usage, llm_calls_left, require_pages
 
 # Fetches arbitrary pages and can spend LLM credits, so editors and up only.
 router = APIRouter(prefix="/debug", tags=["debug"], dependencies=[Depends(require_editor)])
@@ -38,10 +40,17 @@ async def debug_extract(
     req: DebugExtractRequest,
     fetcher: Fetcher = Depends(get_fetcher),
     pipeline: ExtractionPipeline = Depends(get_pipeline),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_editor),
 ) -> dict:
+    ws = await current_workspace(session, principal)
     fetch_info: dict = {}
     url, html, headers = req.url, req.html, {}
     if html is None:
+        # Fetching a page counts against the workspace's daily page limit.
+        await require_pages(session, ws)
+        await add_usage(session, ws.id, pages=1)
+        await session.commit()
         try:
             if req.render:
                 if not get_settings().playwright_enabled:
@@ -61,7 +70,7 @@ async def debug_extract(
                 if not res.ok:
                     raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"upstream returned HTTP {res.status_code}")
                 if not res.is_html:
-                    raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"not an html page ({res.content_type})")
+                    raise HTTPException(422, f"not an html page ({res.content_type})")
                 url, html, headers = res.final_url, res.text, res.headers
                 fetch_info = {"status_code": res.status_code, "final_url": res.final_url, "redirects": res.redirects,
                               "content_type": res.content_type, "bytes": len(res.content), "attempts": res.attempts,
@@ -75,8 +84,13 @@ async def debug_extract(
         except RenderError as exc:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"render failed: {exc}") from exc
 
-    report = await pipeline.run(url, html, headers, allow_fallback=req.use_llm)
+    use_llm = req.use_llm and await llm_calls_left(session, ws) > 0
+    report = await pipeline.run(url, html, headers, allow_fallback=use_llm)
+    if report.used_fallback and any(s.strategy == "llm" for s in report.strategies):
+        await add_usage(session, ws.id, llm_calls=1)
+        await session.commit()
     out = report.to_dict()
+    out["llm_quota_exhausted"] = req.use_llm and not use_llm
     body = report.article.body
     out["fetch"] = fetch_info
     out["fingerprints"] = {"content_hash": content_hash(body), "simhash": f"{simhash(body):016x}" if simhash(body) else None}

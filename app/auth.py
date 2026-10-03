@@ -1,10 +1,15 @@
 """Authentication and authorization.
 
 Two ways in:
-- `X-API-Key: <API_KEY>`: a machine credential for scripts and automation; acts as an admin.
+- `X-API-Key: <API_KEY>`: a machine credential for scripts and automation; acts as an admin of
+  whichever workspace the request names.
 - `Authorization: Bearer <Supabase access token>`: a person. Supabase proves *who* they are
   (we verify the token's signature against the project's published JWKS, so no Supabase secret
-  is needed); the `members` table decides *what they may do*.
+  is needed); `members` rows decide *which workspaces* they belong to and *what they may do* there.
+
+Every data request is scoped to one workspace, chosen with the `X-Workspace-Id` header (default:
+the person's first workspace). On first sign-in a person is linked to any workspaces that invited
+their email; with no invitations, they get a new workspace of their own as its admin.
 
 Roles are ordered: viewer < editor < admin.
 """
@@ -26,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.base import utcnow
-from app.db.models import Member, MemberRole
+from app.db.models import Member, MemberRole, Workspace
 from app.db.session import get_session
 from app.logging import get_logger
 
@@ -44,9 +49,25 @@ class Role(IntEnum):
 
 
 @dataclass(frozen=True)
+class Identity:
+    """Who is calling, before any workspace is chosen."""
+
+    via: str  # "user" | "api_key" | "open"
+    email: str | None = None
+    user_id: str | None = None
+
+    @property
+    def label(self) -> str:
+        return self.email or ("API key" if self.via == "api_key" else "anonymous")
+
+
+@dataclass(frozen=True)
 class Principal:
+    """Who is calling, and what they may do in the workspace this request is about."""
+
     role: Role
     via: str  # "user" | "api_key" | "open"
+    workspace_id: int
     email: str | None = None
     user_id: str | None = None
     member_id: int | None = None
@@ -145,43 +166,68 @@ def set_verifier(verifier: TokenVerifier | None) -> None:
     _verifier = verifier
 
 
-async def resolve_member(session: AsyncSession, user_id: str, email: str, settings: Settings) -> Member | None:
-    """Find the member for this person, linking an invitation to the account on first sign-in."""
-    member = (await session.execute(select(Member).where(Member.user_id == user_id))).scalar_one_or_none()
-    if member is None and email:
-        member = (
+def personal_workspace_name(email: str) -> str:
+    local = (email.split("@", 1)[0] or "My").replace(".", " ").replace("_", " ").strip()
+    return f"{local[:60]}'s workspace"
+
+
+async def onboard(session: AsyncSession, user_id: str, email: str, settings: Settings) -> None:
+    """Link pending invitations, honour ADMIN_EMAILS, and give brand-new people their own workspace."""
+    changed = False
+    if email:
+        pending = (
             await session.execute(select(Member).where(func.lower(Member.email) == email, Member.user_id.is_(None)))
-        ).scalar_one_or_none()
-        if member is not None:
-            member.user_id = user_id
-        elif email in {e.strip().lower() for e in settings.admin_emails if e.strip()}:
-            member = Member(email=email, user_id=user_id, role=MemberRole.admin.value, invited_by="ADMIN_EMAILS")
-            session.add(member)
-    if member is None:
-        return None
-    now = utcnow()
-    last = member.last_seen_at
-    if last is not None and last.tzinfo is None:
-        last = last.replace(tzinfo=now.tzinfo)
-    if last is None or now - last > timedelta(minutes=5):
-        member.last_seen_at = now
-    if session.dirty or session.new:
+        ).scalars().all()
+        for member in pending:
+            # Never let a second account with the same email take over an already-linked seat.
+            taken = (
+                await session.execute(
+                    select(Member.id).where(Member.workspace_id == member.workspace_id, Member.user_id == user_id)
+                )
+            ).first()
+            if taken is None:
+                member.user_id = user_id
+                changed = True
+
+        if email in {e.strip().lower() for e in settings.admin_emails if e.strip()}:
+            original = (await session.execute(select(Workspace).order_by(Workspace.id).limit(1))).scalar_one_or_none()
+            if original is not None:
+                exists = (
+                    await session.execute(
+                        select(Member.id).where(Member.workspace_id == original.id, Member.user_id == user_id)
+                    )
+                ).first()
+                if exists is None:
+                    session.add(Member(workspace_id=original.id, email=email, user_id=user_id,
+                                       role=MemberRole.admin.value, invited_by="ADMIN_EMAILS"))
+                    changed = True
+        if changed:
+            await session.flush()
+
+    has_any = (await session.execute(select(Member.id).where(Member.user_id == user_id).limit(1))).first()
+    if has_any is None:
+        ws = Workspace(name=personal_workspace_name(email), created_by_email=email or None, created_by_user_id=user_id)
+        session.add(ws)
+        await session.flush()
+        session.add(Member(workspace_id=ws.id, email=email, user_id=user_id, role=MemberRole.admin.value, invited_by=None))
+        changed = True
+        log.info("workspace.created_on_signup", workspace_id=ws.id)
+    if changed:
         await session.commit()
-    return member
 
 
-async def get_principal(
+async def get_identity(
     session: AsyncSession = Depends(get_session),
     x_api_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
-) -> Principal:
+) -> Identity:
     settings = get_settings()
     if not settings.auth_enabled:
-        return Principal(Role.admin, "open")  # local development without credentials
+        return Identity("open")  # local development without credentials
 
     if x_api_key is not None:
         if settings.api_key and hmac.compare_digest(x_api_key, settings.api_key):
-            return Principal(Role.admin, "api_key")
+            return Identity("api_key")
         raise _unauthorized("invalid API key")
 
     if authorization and authorization.lower().startswith("bearer ") and settings.supabase_url:
@@ -189,15 +235,59 @@ async def get_principal(
         if claims.get("role") != "authenticated":
             raise _unauthorized("not a signed-in user")
         email = str(claims.get("email") or "").strip().lower()
-        member = await resolve_member(session, str(claims["sub"]), email, settings)
-        if member is None:
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                "Your account isn't on the Newsforge team yet. Ask an admin to invite your email address.",
-            )
-        return Principal(Role.parse(member.role), "user", email=member.email, user_id=member.user_id, member_id=member.id)
+        user_id = str(claims["sub"])
+        await onboard(session, user_id, email, settings)
+        return Identity("user", email=email or None, user_id=user_id)
 
     raise _unauthorized("sign in required")
+
+
+async def _default_workspace(session: AsyncSession) -> Workspace:
+    """For API-key and open access: the original workspace (created if the database is empty)."""
+    ws = (await session.execute(select(Workspace).order_by(Workspace.id).limit(1))).scalar_one_or_none()
+    if ws is None:
+        ws = Workspace(name="Newsforge")
+        session.add(ws)
+        await session.commit()
+    return ws
+
+
+async def get_principal(
+    session: AsyncSession = Depends(get_session),
+    identity: Identity = Depends(get_identity),
+    x_workspace_id: str | None = Header(default=None),
+) -> Principal:
+    wanted: int | None = None
+    if x_workspace_id:
+        try:
+            wanted = int(x_workspace_id)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "X-Workspace-Id must be a number") from exc
+
+    if identity.via in ("api_key", "open"):
+        ws = await session.get(Workspace, wanted) if wanted is not None else await _default_workspace(session)
+        if ws is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "workspace not found")
+        return Principal(Role.admin, identity.via, workspace_id=ws.id)
+
+    stmt = select(Member).where(Member.user_id == identity.user_id).order_by(Member.workspace_id)
+    if wanted is not None:
+        stmt = stmt.where(Member.workspace_id == wanted)
+    member = (await session.execute(stmt.limit(1))).scalar_one_or_none()
+    if member is None:
+        if wanted is not None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You're not a member of that workspace.")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You're not in any workspace. Create one to get started.")
+
+    now = utcnow()
+    last = member.last_seen_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=now.tzinfo)
+    if last is None or now - last > timedelta(minutes=5):
+        member.last_seen_at = now
+        await session.commit()
+    return Principal(Role.parse(member.role), "user", workspace_id=member.workspace_id,
+                     email=member.email, user_id=member.user_id, member_id=member.id)
 
 
 def require_role(minimum: Role):
@@ -212,3 +302,10 @@ def require_role(minimum: Role):
 require_viewer = require_role(Role.viewer)
 require_editor = require_role(Role.editor)
 require_admin = require_role(Role.admin)
+
+
+async def current_workspace(session: AsyncSession, principal: Principal) -> Workspace:
+    ws = await session.get(Workspace, principal.workspace_id)
+    if ws is None:  # deleted mid-request
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "workspace not found")
+    return ws

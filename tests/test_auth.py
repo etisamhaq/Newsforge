@@ -1,73 +1,22 @@
 """Per-person access: Supabase token verification, members, roles, and the API-key fallback."""
 
-import json
-import time
-
-import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from app.auth import TokenVerifier, set_verifier
-from app.config import get_settings
+from tests.auth_fixtures import SOURCE, bearer, invite
 
-SUPABASE = "https://proj.supabase.co"
-ISSUER = f"{SUPABASE}/auth/v1"
-SOURCE = {"name": "Example", "base_url": "https://news.example.com/", "min_delay_seconds": 0}
+API = {"X-API-Key": "machine-key"}
 
 
-class Keys:
-    def __init__(self):
-        self.private = ec.generate_private_key(ec.SECP256R1())
-        self.kid = "kid-1"
-        self.jwks_calls = 0
-
-    def jwks(self) -> dict:
-        jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(self.private.public_key()))
-        jwk.update(kid=self.kid, alg="ES256", use="sig")
-        return {"keys": [jwk]}
-
-    def token(self, sub="user-1", email="ana@example.com", *, exp_in=3600, aud="authenticated", iss=ISSUER,
-              role="authenticated", key=None, kid=None) -> str:
-        now = int(time.time())
-        claims = {"sub": sub, "email": email, "aud": aud, "iss": iss, "role": role, "iat": now, "exp": now + exp_in}
-        return jwt.encode(claims, key or self.private, algorithm="ES256", headers={"kid": kid or self.kid})
-
-
-@pytest.fixture
-def keys():
-    return Keys()
-
-
-@pytest.fixture
-async def auth_client(client, keys, monkeypatch):
-    settings = get_settings()
-    monkeypatch.setattr(settings, "supabase_url", SUPABASE)
-    monkeypatch.setattr(settings, "api_key", "machine-key")
-    monkeypatch.setattr(settings, "admin_emails", ["boss@example.com"])
-
-    def jwks_handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == f"{ISSUER}/.well-known/jwks.json"
-        keys.jwks_calls += 1
-        return httpx.Response(200, json=keys.jwks())
-
-    set_verifier(TokenVerifier(settings, transport=httpx.MockTransport(jwks_handler)))
-    yield client
-    set_verifier(None)
-
-
-def bearer(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
-
-
-async def invite(client, email: str, role: str) -> dict:
-    r = await client.post("/api/v1/members", json={"email": email, "role": role}, headers={"X-API-Key": "machine-key"})
-    assert r.status_code == 201, r.text
-    return r.json()
+async def original_workspace(client) -> int:
+    """The original workspace (API-key requests create it on an empty database)."""
+    return (await client.get("/api/v1/workspace", headers=API)).json()["workspace"]["id"]
 
 
 async def test_open_mode_without_credentials(client):
-    assert (await client.get("/api/v1/me")).json() == {"email": None, "role": "admin", "via": "open"}
+    me = (await client.get("/api/v1/me")).json()
+    assert me["via"] == "open" and me["email"] is None
 
 
 async def test_requires_sign_in(auth_client):
@@ -85,7 +34,7 @@ async def test_requires_sign_in(auth_client):
         lambda k: k.token(key=ec.generate_private_key(ec.SECP256R1())),  # forged signature
         lambda k: k.token(role="anon"),  # anon key, not a person
         lambda k: "not-a-jwt",
-        lambda k: jwt.encode({"sub": "x"}, "secret", algorithm="HS256", headers={"kid": k.kid}),  # alg confusion
+        lambda k: jwt.encode({"sub": "x"}, "secret-key-that-is-long-enough-123", algorithm="HS256", headers={"kid": k.kid}),
     ],
 )
 async def test_rejects_bad_tokens(auth_client, keys, make_token):
@@ -93,28 +42,36 @@ async def test_rejects_bad_tokens(auth_client, keys, make_token):
     assert r.status_code == 401
 
 
-async def test_unknown_person_is_forbidden(auth_client, keys):
-    r = await auth_client.get("/api/v1/me", headers=bearer(keys.token(email="stranger@example.com")))
-    assert r.status_code == 403
-    assert "Ask an admin" in r.json()["detail"]
+async def test_new_person_gets_their_own_workspace(auth_client, keys):
+    token = bearer(keys.token(sub="new-id", email="New.Person@example.com"))
+    me = (await auth_client.get("/api/v1/me", headers=token)).json()
+    assert me["email"] == "new.person@example.com"
+    assert len(me["workspaces"]) == 1
+    ws = me["workspaces"][0]
+    assert ws["role"] == "admin" and ws["owned"] is True and ws["name"] == "new person's workspace"
+    # Signing in again doesn't create another one.
+    me2 = (await auth_client.get("/api/v1/me", headers=token)).json()
+    assert [w["id"] for w in me2["workspaces"]] == [ws["id"]]
+    # They can use it straight away.
+    assert (await auth_client.post("/api/v1/sources", json=SOURCE, headers=token)).status_code == 201
 
 
-async def test_admin_email_bootstraps_first_admin(auth_client, keys):
-    token = keys.token(sub="boss-id", email="Boss@Example.com")
-    me = (await auth_client.get("/api/v1/me", headers=bearer(token))).json()
-    assert me == {"email": "boss@example.com", "role": "admin", "via": "user"}
-    members = (await auth_client.get("/api/v1/members", headers=bearer(token))).json()
-    assert members[0]["email"] == "boss@example.com" and members[0]["joined"] is True
+async def test_admin_email_joins_the_original_workspace(auth_client, keys):
+    original = await original_workspace(auth_client)
+    me = (await auth_client.get("/api/v1/me", headers=bearer(keys.token(sub="boss-id", email="Boss@Example.com")))).json()
+    assert me["workspaces"] == [{"id": original, "name": "Newsforge", "role": "admin", "owned": False}]
 
 
 async def test_invitation_links_on_first_sign_in(auth_client, keys):
+    original = await original_workspace(auth_client)
     await invite(auth_client, "ana@example.com", "editor")
-    r = await auth_client.get("/api/v1/me", headers=bearer(keys.token(sub="ana-id", email="ana@example.com")))
-    assert r.json()["role"] == "editor"
-    members = (await auth_client.get("/api/v1/members", headers={"X-API-Key": "machine-key"})).json()
+    me = (await auth_client.get("/api/v1/me", headers=bearer(keys.token(sub="ana-id", email="ana@example.com")))).json()
+    assert [(w["id"], w["role"]) for w in me["workspaces"]] == [(original, "editor")]  # no extra empty workspace
+    members = (await auth_client.get("/api/v1/members", headers=API)).json()
     assert members[0]["joined"] is True and members[0]["invited_by"] == "API key"
-    # A different account later signing up with the same email can't take over the membership.
-    r = await auth_client.get("/api/v1/me", headers=bearer(keys.token(sub="impostor", email="ana@example.com")))
+    # Another account using the same email can't take over Ana's seat.
+    impostor = bearer(keys.token(sub="impostor", email="ana@example.com"))
+    r = await auth_client.get("/api/v1/sources", headers={**impostor, "X-Workspace-Id": str(original)})
     assert r.status_code == 403
 
 
@@ -123,7 +80,6 @@ async def test_role_permissions(auth_client, keys):
     await invite(auth_client, "e@example.com", "editor")
     viewer = bearer(keys.token(sub="v", email="v@example.com"))
     editor = bearer(keys.token(sub="e", email="e@example.com"))
-    admin = {"X-API-Key": "machine-key"}
 
     assert (await auth_client.get("/api/v1/sources", headers=viewer)).status_code == 200
     assert (await auth_client.get("/api/v1/stats", headers=viewer)).status_code == 200
@@ -135,7 +91,7 @@ async def test_role_permissions(auth_client, keys):
     assert (await auth_client.patch(f"/api/v1/sources/{src['id']}", json={"max_pages": 5}, headers=editor)).status_code == 200
     assert (await auth_client.delete(f"/api/v1/sources/{src['id']}", headers=editor)).status_code == 403
     assert (await auth_client.get("/api/v1/members", headers=editor)).status_code == 403
-    assert (await auth_client.delete(f"/api/v1/sources/{src['id']}", headers=admin)).status_code == 204
+    assert (await auth_client.delete(f"/api/v1/sources/{src['id']}", headers=API)).status_code == 204
 
 
 async def test_crawl_records_who_started_it(auth_client, keys):
@@ -157,7 +113,8 @@ async def test_crawl_records_who_started_it(auth_client, keys):
 
 async def test_team_management_and_last_admin_guard(auth_client, keys):
     boss = bearer(keys.token(sub="boss-id", email="boss@example.com"))
-    await auth_client.get("/api/v1/me", headers=boss)  # bootstrap admin
+    await original_workspace(auth_client)
+    await auth_client.get("/api/v1/me", headers=boss)  # joins the original workspace as admin
     m = (await auth_client.post("/api/v1/members", json={"email": " New@Example.com ", "role": "viewer"}, headers=boss)).json()
     assert m["email"] == "new@example.com" and m["joined"] is False and m["invited_by"] == "boss@example.com"
     assert (await auth_client.post("/api/v1/members", json={"email": "new@example.com"}, headers=boss)).status_code == 409
@@ -166,7 +123,6 @@ async def test_team_management_and_last_admin_guard(auth_client, keys):
 
     members = (await auth_client.get("/api/v1/members", headers=boss)).json()
     boss_id = next(x["id"] for x in members if x["email"] == "boss@example.com")
-    # Two admins: demoting one is fine; then the remaining admin can't be demoted or removed.
     assert (await auth_client.patch(f"/api/v1/members/{m['id']}", json={"role": "editor"}, headers=boss)).status_code == 200
     assert (await auth_client.patch(f"/api/v1/members/{boss_id}", json={"role": "viewer"}, headers=boss)).status_code == 409
     assert (await auth_client.delete(f"/api/v1/members/{boss_id}", headers=boss)).status_code == 409
@@ -174,10 +130,11 @@ async def test_team_management_and_last_admin_guard(auth_client, keys):
 
 
 async def test_removed_member_loses_access(auth_client, keys):
+    original = await original_workspace(auth_client)
     m = await invite(auth_client, "temp@example.com", "viewer")
-    token = bearer(keys.token(sub="t", email="temp@example.com"))
+    token = {**bearer(keys.token(sub="t", email="temp@example.com")), "X-Workspace-Id": str(original)}
     assert (await auth_client.get("/api/v1/sources", headers=token)).status_code == 200
-    await auth_client.delete(f"/api/v1/members/{m['id']}", headers={"X-API-Key": "machine-key"})
+    await auth_client.delete(f"/api/v1/members/{m['id']}", headers=API)
     assert (await auth_client.get("/api/v1/sources", headers=token)).status_code == 403
 
 

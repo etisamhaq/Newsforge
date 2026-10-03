@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_session
+from app.api.deps import Principal, get_session, require_viewer
 from app.db.models import Article, RawDocument
 from app.schemas import ArticleDetail, ArticlePage, ArticleSummary
 from app.search.base import SearchQuery, get_search_backend
@@ -30,8 +30,9 @@ async def list_articles(
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0, le=100_000),
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_viewer),
 ) -> dict:
-    query = SearchQuery(q=q, source_id=source_id, language=language, category=category, since=since, until=until,
+    query = SearchQuery(workspace_id=principal.workspace_id, q=q, source_id=source_id, language=language, category=category, since=since, until=until,
                         min_confidence=min_confidence, include_duplicates=include_duplicates, sort=sort,
                         limit=limit, offset=offset)
     backend = get_search_backend(session.bind.dialect.name)
@@ -44,28 +45,34 @@ async def list_articles(
     return {"items": items, "total": page.total, "limit": limit, "offset": offset, "backend": page.backend}
 
 
-async def _get_article(session: AsyncSession, article_id: int) -> Article:
+async def _get_article(session: AsyncSession, article_id: int, workspace_id: int) -> Article:
     article = await session.get(Article, article_id)
-    if article is None:
+    if article is None or article.workspace_id != workspace_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "article not found")
     return article
 
 
 @router.get("/{article_id}", response_model=ArticleDetail)
-async def get_article(article_id: int, session: AsyncSession = Depends(get_session)) -> Article:
-    return await _get_article(session, article_id)
+async def get_article(
+    article_id: int, session: AsyncSession = Depends(get_session), principal: Principal = Depends(require_viewer)
+) -> Article:
+    return await _get_article(session, article_id, principal.workspace_id)
 
 
 @router.get("/{article_id}/duplicates", response_model=list[ArticleSummary])
-async def get_duplicates(article_id: int, session: AsyncSession = Depends(get_session)) -> list[Article]:
-    await _get_article(session, article_id)
-    stmt = select(Article).where(Article.duplicate_of_id == article_id).order_by(Article.id).limit(200)
+async def get_duplicates(
+    article_id: int, session: AsyncSession = Depends(get_session), principal: Principal = Depends(require_viewer)
+) -> list[Article]:
+    await _get_article(session, article_id, principal.workspace_id)
+    stmt = select(Article).where(Article.duplicate_of_id == article_id, Article.workspace_id == principal.workspace_id).order_by(Article.id).limit(200)
     return list((await session.execute(stmt)).scalars())
 
 
 @router.get("/{article_id}/raw")
-async def get_raw_html(article_id: int, session: AsyncSession = Depends(get_session)) -> Response:
-    await _get_article(session, article_id)
+async def get_raw_html(
+    article_id: int, session: AsyncSession = Depends(get_session), principal: Principal = Depends(require_viewer)
+) -> Response:
+    await _get_article(session, article_id, principal.workspace_id)
     raw = (
         await session.execute(
             select(RawDocument).where(RawDocument.article_id == article_id).order_by(RawDocument.id.desc()).limit(1)
