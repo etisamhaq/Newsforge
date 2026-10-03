@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_session
+from app.api.deps import Principal, get_session, require_editor
 from app.api.routes.sources import get_source_or_404
 from app.db.base import utcnow
 from app.db.models import CrawlJob, JobStatus
@@ -30,11 +30,13 @@ async def start_crawl(
     source_id: int,
     session: AsyncSession = Depends(get_session),
     dispatch: Dispatcher = Depends(get_dispatcher),
+    principal: Principal = Depends(require_editor),
 ) -> CrawlJob:
     source = await get_source_or_404(session, source_id)
     if await has_active_job(session, source.id):
         raise HTTPException(status.HTTP_409_CONFLICT, "a crawl for this source is already pending or running")
     job = await create_job(session, source, trigger="manual")
+    job.triggered_by = principal.label
     await session.commit()
     try:
         await dispatch(job.id)
@@ -74,7 +76,7 @@ async def get_crawl(job_id: int, session: AsyncSession = Depends(get_session)) -
     return job
 
 
-@router.post("/crawls/{job_id}/cancel", response_model=CrawlJobOut)
+@router.post("/crawls/{job_id}/cancel", response_model=CrawlJobOut, dependencies=[Depends(require_editor)])
 async def cancel_crawl(job_id: int, session: AsyncSession = Depends(get_session)) -> CrawlJob:
     job = await session.get(CrawlJob, job_id)
     if job is None:

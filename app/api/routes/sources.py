@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_session
+from app.api.deps import get_session, require_admin, require_editor
 from app.db.models import Source
 from app.schemas import SourceCreate, SourceOut, SourcePage, SourceUpdate, domain_for
 
@@ -19,7 +19,7 @@ async def get_source_or_404(session: AsyncSession, source_id: int) -> Source:
     return source
 
 
-@router.post("", response_model=SourceOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=SourceOut, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_editor)])
 async def create_source(payload: SourceCreate, session: AsyncSession = Depends(get_session)) -> Source:
     data = payload.model_dump()
     domain = domain_for(data["base_url"])
@@ -56,7 +56,7 @@ async def get_source(source_id: int, session: AsyncSession = Depends(get_session
     return await get_source_or_404(session, source_id)
 
 
-@router.patch("/{source_id}", response_model=SourceOut)
+@router.patch("/{source_id}", response_model=SourceOut, dependencies=[Depends(require_editor)])
 async def update_source(source_id: int, payload: SourceUpdate, session: AsyncSession = Depends(get_session)) -> Source:
     source = await get_source_or_404(session, source_id)
     changes = payload.model_dump(exclude_unset=True)
@@ -75,7 +75,7 @@ async def update_source(source_id: int, payload: SourceUpdate, session: AsyncSes
     return source
 
 
-@router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_admin)])
 async def delete_source(source_id: int, session: AsyncSession = Depends(get_session)) -> Response:
     source = await get_source_or_404(session, source_id)
     await session.delete(source)

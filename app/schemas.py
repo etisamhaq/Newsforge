@@ -173,6 +173,7 @@ class CrawlJobOut(BaseModel):
     source_id: int
     status: str
     trigger: str
+    triggered_by: str | None = None
     task_id: str | None
     created_at: datetime
     started_at: datetime | None

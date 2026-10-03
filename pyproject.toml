@@ -21,6 +21,7 @@ dependencies = [
     "structlog>=24.1",
     "prometheus-client>=0.20",
     "langdetect>=1.0.9",
+    "pyjwt[crypto]>=2.8",
 ]
 
 [project.optional-dependencies]

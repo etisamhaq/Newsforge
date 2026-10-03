@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.api.deps import require_editor
 from app.config import get_settings
 from app.crawler.discovery import discover_feed_links, extract_links
 from app.crawler.fetcher import Fetcher, FetchError, RobotsDisallowed
@@ -16,7 +17,8 @@ from app.dedup.hashing import content_hash, simhash
 from app.extraction.pipeline import ExtractionPipeline
 from app.schemas import DebugExtractRequest, _check_url
 
-router = APIRouter(prefix="/debug", tags=["debug"])
+# Fetches arbitrary pages and can spend LLM credits, so editors and up only.
+router = APIRouter(prefix="/debug", tags=["debug"], dependencies=[Depends(require_editor)])
 
 
 async def get_fetcher() -> AsyncIterator[Fetcher]:

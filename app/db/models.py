@@ -81,6 +81,7 @@ class CrawlJob(Base):
     status: Mapped[str] = mapped_column(String(16), default=JobStatus.pending.value, nullable=False, index=True)
     trigger: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
     task_id: Mapped[str | None] = mapped_column(String(64))
+    triggered_by: Mapped[str | None] = mapped_column(String(320))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -168,3 +169,23 @@ class RawDocument(Base):
     content_gzip: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     rendered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class MemberRole(str, enum.Enum):
+    viewer = "viewer"
+    editor = "editor"
+    admin = "admin"
+
+
+class Member(TimestampMixin, Base):
+    """A person allowed to use Newsforge. Identity comes from Supabase Auth; access from here."""
+
+    __tablename__ = "members"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
+    # Supabase auth user id; filled in the first time the invited person signs in.
+    user_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    role: Mapped[str] = mapped_column(String(16), default=MemberRole.viewer.value, nullable=False)
+    invited_by: Mapped[str | None] = mapped_column(String(320))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     api_key: str | None = Field(default=None, description="If set, required in X-API-Key for /api routes")
     cors_origins: list[str] = Field(default_factory=list, description='e.g. ["https://newsforge.example.com"]')
 
+    # --- user accounts (Supabase Auth) ---
+    # When set, the API accepts Supabase access tokens (Authorization: Bearer ...) and
+    # authorizes people through the `members` table. API_KEY keeps working for automation.
+    supabase_url: str | None = None
+    supabase_jwt_audience: str = "authenticated"
+    jwks_cache_seconds: int = 600
+    # Emails that become admins on first sign-in (bootstraps the first admin).
+    admin_emails: list[str] = Field(default_factory=list)
+
     # --- infrastructure ---
     database_url: str = "postgresql+asyncpg://crawler:crawler@localhost:5432/crawler"
     db_pool_size: int = 10
@@ -93,6 +102,10 @@ class Settings(BaseSettings):
     @property
     def result_backend(self) -> str:
         return self.celery_result_backend or self.redis_url
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.api_key or self.supabase_url)
 
     @property
     def is_postgres(self) -> bool:

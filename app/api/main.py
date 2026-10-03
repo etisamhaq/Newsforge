@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api.deps import require_api_key
-from app.api.routes import articles, crawls, debug, health, sources, stats
+from app.api.deps import require_viewer
+from app.api.routes import articles, crawls, debug, health, members, sources, stats
 from app.config import get_settings
 from app.db.session import dispose_engine
 from app.logging import configure_logging, get_logger
@@ -25,7 +25,9 @@ async def lifespan(app: FastAPI):
     configure_logging()
     settings = get_settings()
     log.info("api.startup", version=__version__, env=settings.environment)
-    if settings.environment == "production" and (not settings.api_key or settings.api_key == "change-me"):
+    if settings.environment == "production" and not settings.auth_enabled:
+        log.warning("api.auth_disabled", hint="set SUPABASE_URL and/or API_KEY; the API is open to anyone")
+    if settings.api_key == "change-me":
         log.warning("api.insecure_api_key", hint="set API_KEY to a strong secret")
     yield
     await dispose_engine()
@@ -68,12 +70,14 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
     app.include_router(health.router)
-    protected = [Depends(require_api_key)]
+    # Every API route needs at least the viewer role; write endpoints declare stricter roles.
+    protected = [Depends(require_viewer)]
     app.include_router(sources.router, prefix="/api/v1", dependencies=protected)
     app.include_router(crawls.router, prefix="/api/v1", dependencies=protected)
     app.include_router(articles.router, prefix="/api/v1", dependencies=protected)
     app.include_router(debug.router, prefix="/api/v1", dependencies=protected)
     app.include_router(stats.router, prefix="/api/v1", dependencies=protected)
+    app.include_router(members.router, prefix="/api/v1", dependencies=protected)
 
     # Only needed when the web UI is served from a different origin than the API.
     origins = get_settings().cors_origins
@@ -82,7 +86,7 @@ def create_app() -> FastAPI:
             CORSMiddleware,
             allow_origins=origins,
             allow_methods=["GET", "POST", "PATCH", "DELETE"],
-            allow_headers=["X-API-Key", "Content-Type", "X-Request-ID"],
+            allow_headers=["Authorization", "X-API-Key", "Content-Type", "X-Request-ID"],
             expose_headers=["X-Request-ID"],
             max_age=600,
         )
