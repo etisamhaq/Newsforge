@@ -14,17 +14,54 @@ Newsforge discovers, extracts, deduplicates and indexes news articles from any n
 
 ```bash
 cp .env.example .env          # set API_KEY to a strong secret
-docker compose up --build -d  # postgres, redis, migrate, api, worker, worker-default, beat
-curl localhost:8000/health/ready
+docker compose up --build -d  # postgres, redis, migrate, api, web, worker, worker-default, beat
+curl localhost:8080/health/ready
 ```
+
+Open **http://localhost:8080** and sign in with your `API_KEY`.
 
 | Service | Purpose |
 | --- | --- |
-| `api` | FastAPI on :8000 (`/docs` for OpenAPI) |
+| `web` | The web UI on :8080 (nginx). Also proxies `/api` to the API, so this is the only port browsers need |
+| `api` | FastAPI, bound to `127.0.0.1:8000` (`/docs` for OpenAPI) |
 | `worker` | Celery worker for the `crawl` queue (Chromium installed). Metrics on :9100 |
 | `worker-default` | Runs the scheduler tick (`default` queue) so it never waits behind long crawls |
 | `beat` | Fires `dispatch_due` every `SCHEDULER_INTERVAL_SECONDS` |
 | `migrate` | `alembic upgrade head`, runs once before the app starts |
+
+## Web UI
+
+`frontend/` is a React + TypeScript app (Vite, TanStack Query, React Router). Plain CSS with design tokens, light and dark themes, and fonts bundled locally so the app makes no third-party requests.
+
+| Screen | What it's for |
+| --- | --- |
+| Dashboard | Last-24h pipeline (discovered → fetched → articles → new → duplicates), latest stories, daily volume, languages, crawl outcomes, per-source health |
+| Sources | Add, edit, pause or delete sources, and start a crawl |
+| Crawls | Every run with live progress, results, errors and cancel |
+| Articles | Full-text search with filters (source, language, dates, confidence, duplicates), plus a reader view showing where each field came from |
+| Extraction debugger | Run the pipeline on any URL or pasted HTML and see every method's output, the winning values and the classifier's reasons |
+
+Sign-in uses the server's `API_KEY`. It's kept in session storage, or in local storage only if "Stay signed in" is ticked.
+
+```bash
+cd frontend
+npm ci
+npm run dev        # http://localhost:5173, proxies /api to VITE_DEV_API_TARGET (default http://localhost:8000)
+npm test           # unit tests (Vitest)
+npm run lint && npm run build
+```
+
+## Deploying
+
+The Compose file is the production layout. On a server:
+
+1. Copy `.env.example` to `.env` and set a strong `API_KEY`. Set `GROQ_API_KEY` too if you want the LLM fallback.
+2. Run `docker compose up --build -d`.
+3. Put your TLS reverse proxy or load balancer in front of the `web` service (port 8080). It's the only service that needs to be public.
+
+`web` serves the built app with strict security headers (CSP, `frame-ancestors 'none'`, nosniff) and proxies `/api` and `/health` to the `api` container. `/metrics` is not exposed through it.
+
+**Hosting the UI separately** (a static host or CDN): build with `VITE_API_BASE_URL=https://api.example.com npm run build`, then set `CORS_ORIGINS=["https://ui.example.com"]` on the API. When using the `web` image with a remote API, set `API_UPSTREAM` to the API's address, and `CSP_CONNECT_SRC` if the browser must call another origin.
 
 ## Local development
 
@@ -73,6 +110,7 @@ curl -H "$H" -H 'content-type: application/json' localhost:8000/api/v1/debug/ext
 | `GET /crawls`, `GET /crawls/{id}`, `POST /crawls/{id}/cancel` | Jobs, stats and cooperative cancel |
 | `GET /articles` | List and search: `q`, `source_id`, `language`, `category`, `since`, `until`, `min_confidence`, `include_duplicates`, `sort=published\|relevance\|created` |
 | `GET /articles/{id}` / `/duplicates` / `/raw` | Detail with body, linked duplicates, stored raw HTML (served as sandboxed `text/plain`) |
+| `GET /stats` | Dashboard aggregates: totals, last-24h pipeline, articles per day (UTC), languages, job outcomes, per-source health |
 | `POST /debug/extract` | Full extraction trace for a URL or supplied HTML: each strategy's candidates, timings, merged field sources, classifier reasons, fingerprints, discovered links. Options: `render`, `use_llm`, `include_html` |
 | `GET /debug/robots?url=`, `GET /debug/normalize?url=` | robots.txt decision and URL normalization |
 
@@ -170,7 +208,7 @@ On the API at `/metrics`, and on workers at `:9100` (multiprocess mode):
 
 Every setting is an environment variable. See `app/config.py` and `.env.example`. Key settings:
 
-- `DATABASE_URL`, `REDIS_URL`, `API_KEY`, `USER_AGENT`
+- `DATABASE_URL`, `REDIS_URL`, `API_KEY`, `CORS_ORIGINS`, `USER_AGENT`
 - `DEFAULT_MIN_DELAY`, `MAX_RETRIES`, `MAX_RESPONSE_BYTES`, `MAX_SITEMAP_BYTES`
 - `CRAWL_CONCURRENCY`, `CRAWL_TIME_BUDGET_SECONDS`, `MAX_ARTICLE_AGE_DAYS`
 - `PLAYWRIGHT_ENABLED`, `LLM_ENABLED`, `SEARCH_BACKEND`, `SIMHASH_MAX_DISTANCE`
