@@ -6,3 +6,4 @@ __pycache__/
 *.db
 build/
 *.egg-info/
+.mcp.json
