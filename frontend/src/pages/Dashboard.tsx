@@ -139,7 +139,7 @@ export function Dashboard() {
         title="Dashboard"
         intro={
           stats
-            ? `${fmtNumber(stats.totals.articles)} stories from ${fmtNumber(stats.totals.sources)} sources. ${
+            ? `${fmtNumber(stats.totals.articles)} ${stats.totals.articles === 1 ? 'story' : 'stories'} from ${fmtNumber(stats.totals.sources)} ${stats.totals.sources === 1 ? 'source' : 'sources'}. ${
                 active > 0 ? `${active} crawl${active === 1 ? '' : 's'} in progress.` : 'No crawls running.'
               }`
             : undefined
