@@ -76,24 +76,36 @@ async def test_full_crawl(session):
     assert art.source_id == source.id and art.confidence > 0.8 and art.language == "en"
 
 
-async def test_recrawl_uses_cache_and_does_not_duplicate(session):
-    source = await make_source(session)
-    etag_hits = []
+async def test_recrawl_skips_known_articles_and_does_not_duplicate(session):
+    source = await make_source(session, discover_links=False, feed_urls=[f"{HOST}/feed"])
+    requested: list[str] = []
+    handler = build_site(requested)
+    for _ in range(2):
+        fetcher = make_fetcher(handler)
+        await CrawlEngine(get_sessionmaker(), fetcher).crawl(source)
+        await fetcher.aclose()
+    story = f"{HOST}/2024/05/14/city-approves-transit-plan"
+    assert requested.count(f"{HOST}/feed") == 2  # the feed is re-read every crawl
+    assert requested.count(story) == 1  # but a story collected recently is not downloaded again
+    assert (await session.execute(select(func.count(Article.id)))).scalar_one() == 2
+
+
+async def test_feed_entries_beyond_page_limit_are_picked_up_next_crawl(session):
+    """Regression: a 304 on the feed used to hide entries an earlier crawl never reached."""
 
     def feed(request):
-        if request.headers.get("if-none-match") == '"feed-v1"':
-            etag_hits.append(1)
+        if request.headers.get("if-none-match"):
             return httpx.Response(304)
-        return httpx.Response(200, headers={"etag": '"feed-v1"', "content-type": "application/rss+xml"},
+        return httpx.Response(200, headers={"etag": '"v1"', "content-type": "application/rss+xml"},
                               content=fixture_text("rss.xml").encode())
 
+    source = await make_source(session, max_pages=1, discover_links=False, feed_urls=[f"{HOST}/feed"])
     handler = build_site(extra={f"{HOST}/feed": feed})
     for _ in range(2):
         fetcher = make_fetcher(handler)
         await CrawlEngine(get_sessionmaker(), fetcher).crawl(source)
         await fetcher.aclose()
-    assert etag_hits, "second crawl should send If-None-Match for the feed"
-    assert (await session.execute(select(func.count(Article.id)))).scalar_one() == 3
+    assert (await session.execute(select(func.count(Article.id)))).scalar_one() == 2
 
 
 async def test_max_pages_limit(session):
@@ -207,3 +219,14 @@ async def test_short_media_pages_are_not_articles():
     report = await ExtractionPipeline().run(f"{HOST}/2024/05/14/watch-storm-footage-video", html)
     assert not report.article.is_article
     assert any("too short" in r for r in report.classification.reasons)
+
+
+async def test_depth_zero_still_crawls_feed_entries(session):
+    source = await make_source(session, max_depth=0, feed_urls=[f"{HOST}/feed"])
+    fetcher = make_fetcher(build_site())
+    stats = await CrawlEngine(get_sessionmaker(), fetcher).crawl(source)
+    await fetcher.aclose()
+    # Both feed stories are fetched; links on pages (the linked-only story) are not followed.
+    assert stats.articles_new == 2
+    titles = set((await session.execute(select(Article.title))).scalars())
+    assert "Linked story" not in titles

@@ -255,16 +255,19 @@ class CrawlEngine:
             if not feeds and not sitemaps:
                 sitemaps = [origin_of(base) + p for p in COMMON_SITEMAP_PATHS[:1]]
 
+        # Feed and sitemap entries are seeds (depth 0); max_depth only limits following links.
         for feed in feeds:
             for item in await self._load_feed(feed, source, stats):
-                self._enqueue(frontier, item, 1, source, stats, boost=1.0)
+                self._enqueue(frontier, item, 0, source, stats, boost=1.0)
         for item in await self._load_sitemaps(sitemaps, source, stats):
-            self._enqueue(frontier, item, 1, source, stats, boost=0.8)
+            self._enqueue(frontier, item, 0, source, stats, boost=0.8)
         for url in start_urls:
             frontier.push(url, 0, "seed", priority=0.5)
 
     async def _load_feed(self, url: str, source: Source, stats: CrawlStats) -> list[DiscoveredURL]:
-        res = await self._cached_fetch(url, source, stats, seed=True)
+        # Feeds and sitemaps are always re-read in full: a 304 would hide entries an earlier crawl never
+        # reached (e.g. it stopped at max_pages). Already-collected articles are skipped per page instead.
+        res = await self._cached_fetch(url, source, stats, seed=True, conditional=False)
         if res is None:
             return []
         await self._record_page(url, source.id, result=res, is_article=False)
@@ -281,7 +284,9 @@ class CrawlEngine:
             if sm in seen:
                 continue
             seen.add(sm)
-            res = await self._cached_fetch(sm, source, stats, seed=True, max_bytes=self.settings.max_sitemap_bytes)
+            res = await self._cached_fetch(
+                sm, source, stats, seed=True, conditional=False, max_bytes=self.settings.max_sitemap_bytes
+            )
             if res is None:
                 continue
             await self._record_page(sm, source.id, result=res, is_article=False)
