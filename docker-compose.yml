@@ -1,0 +1,98 @@
+x-app: &app
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  env_file: .env
+  environment: &app-env
+    DATABASE_URL: postgresql+asyncpg://crawler:crawler@postgres:5432/crawler
+    REDIS_URL: redis://redis:6379/0
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: crawler
+      POSTGRES_PASSWORD: crawler
+      POSTGRES_DB: crawler
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crawler -d crawler"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        INSTALL_PLAYWRIGHT: "true"
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=INFO", "--concurrency=4", "-Q", "crawl", "-n", "crawl@%h"]
+    environment:
+      <<: *app-env
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+      WORKER_METRICS_PORT: "9100"
+      PLAYWRIGHT_ENABLED: "true"
+    ports:
+      - "9100:9100"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Lightweight worker for the scheduler tick, so it never waits behind long crawls.
+  worker-default:
+    <<: *app
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=INFO", "--concurrency=2", "-Q", "default", "-n", "default@%h"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    <<: *app
+    command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  redisdata:
