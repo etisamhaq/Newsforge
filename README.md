@@ -87,7 +87,7 @@ The tests cover: URL normalization, SSRF (IP classes, DNS rebinding at connect t
 
 ## API
 
-All `/api/v1/*` routes require `X-API-Key` when `API_KEY` is set. `/health`, `/health/ready` and `/metrics` stay open for probes.
+All `/api/v1/*` routes need a signed-in member (`Authorization: Bearer <Supabase access token>`) or the API key (`X-API-Key`). Write endpoints need the editor role, and deleting sources or managing the team needs admin (see [Accounts and roles](#accounts-and-roles)). `/health`, `/health/ready` and `/metrics` stay open for probes.
 
 ```bash
 H='X-API-Key: change-me'
@@ -110,9 +110,31 @@ curl -H "$H" -H 'content-type: application/json' localhost:8000/api/v1/debug/ext
 | `GET /crawls`, `GET /crawls/{id}`, `POST /crawls/{id}/cancel` | Jobs, stats and cooperative cancel |
 | `GET /articles` | List and search: `q`, `source_id`, `language`, `category`, `since`, `until`, `min_confidence`, `include_duplicates`, `sort=published\|relevance\|created` |
 | `GET /articles/{id}` / `/duplicates` / `/raw` | Detail with body, linked duplicates, stored raw HTML (served as sandboxed `text/plain`) |
+| `GET /me`, `GET/POST /members`, `PATCH/DELETE /members/{id}` | The signed-in person and their role; team management (admin) |
 | `GET /stats` | Dashboard aggregates: totals, last-24h pipeline, articles per day (UTC), languages, job outcomes, per-source health |
 | `POST /debug/extract` | Full extraction trace for a URL or supplied HTML: each strategy's candidates, timings, merged field sources, classifier reasons, fingerprints, discovered links. Options: `render`, `use_llm`, `include_html` |
 | `GET /debug/robots?url=`, `GET /debug/normalize?url=` | robots.txt decision and URL normalization |
+
+## Accounts and roles
+
+People sign in with their own email and password (Supabase Auth). Supabase proves *who* someone is; Newsforge's `members` table decides *what they can do*.
+
+| Role | Can |
+| --- | --- |
+| Viewer | Read the dashboard, sources, crawls and articles |
+| Editor | Also add and edit sources, start and cancel crawls, and use the extraction debugger |
+| Admin | Also delete sources and manage the team |
+
+- **Joining:** an admin invites an email on the Team page. That person creates an account with the same email, confirms it, and has access straight away. Anyone else who signs up sees "you're not on the team yet", and the API refuses them (403).
+- **First admin:** emails in `ADMIN_EMAILS` become admins on their first sign-in.
+- **Safety:** at least one admin must always remain. Crawls record who started them.
+- **How tokens are checked:** the API verifies Supabase access tokens (ES256) against the project's public JWKS, checking signature, expiry, issuer and audience. No Supabase secret is stored anywhere.
+- **Machine access:** `X-API-Key: $API_KEY` still works for scripts and automation, and acts as an admin.
+- **Without Supabase:** leave `SUPABASE_URL` and the `VITE_SUPABASE_*` values empty and the UI falls back to API-key sign-in. If neither `SUPABASE_URL` nor `API_KEY` is set, the API is open, which is only meant for local development.
+
+**Supabase dashboard settings (one-time):**
+- *Authentication → URL Configuration:* set **Site URL** to your web URL, and add it with `/**` under **Redirect URLs**, so confirmation and reset links come back to the app.
+- *Authentication → Emails → SMTP:* configure a real email provider (e.g. Resend, Postmark or SES). Supabase's built-in sender only delivers to your Supabase organization's own members and is heavily rate-limited, so invited colleagues won't receive their confirmation emails without it.
 
 ## Architecture
 
@@ -208,7 +230,7 @@ On the API at `/metrics`, and on workers at `:9100` (multiprocess mode):
 
 Every setting is an environment variable. See `app/config.py` and `.env.example`. Key settings:
 
-- `DATABASE_URL`, `REDIS_URL`, `API_KEY`, `CORS_ORIGINS`, `USER_AGENT`
+- `DATABASE_URL`, `REDIS_URL`, `API_KEY`, `SUPABASE_URL`, `ADMIN_EMAILS`, `CORS_ORIGINS`, `USER_AGENT`
 - `DEFAULT_MIN_DELAY`, `MAX_RETRIES`, `MAX_RESPONSE_BYTES`, `MAX_SITEMAP_BYTES`
 - `CRAWL_CONCURRENCY`, `CRAWL_TIME_BUDGET_SECONDS`, `MAX_ARTICLE_AGE_DAYS`
 - `PLAYWRIGHT_ENABLED`, `LLM_ENABLED`, `SEARCH_BACKEND`, `SIMHASH_MAX_DISTANCE`
