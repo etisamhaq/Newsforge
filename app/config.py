@@ -25,8 +25,18 @@ class Settings(BaseSettings):
     supabase_url: str | None = None
     supabase_jwt_audience: str = "authenticated"
     jwks_cache_seconds: int = 600
-    # Emails that become admins on first sign-in (bootstraps the first admin).
+    # Emails that become admins of the original workspace on first sign-in.
     admin_emails: list[str] = Field(default_factory=list)
+
+    # --- workspace limits (defaults; each workspace row can override them) ---
+    workspace_max_sources: int = 10
+    workspace_max_pages_per_day: int = 500  # every fetch counts: crawls, feeds/sitemaps, debugger
+    workspace_max_pages_per_crawl: int = 200
+    workspace_min_crawl_interval_minutes: int = 30
+    workspace_max_concurrent_crawls: int = 2
+    workspace_llm_calls_per_day: int = 25
+    workspace_max_members: int = 25
+    max_owned_workspaces: int = 3  # workspaces one person can create
 
     # --- infrastructure ---
     database_url: str = "postgresql+asyncpg://crawler:crawler@localhost:5432/crawler"

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -17,10 +18,15 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, BigIntPK, JSONType, utcnow
+
+
+def workspace_fk(index: bool = True) -> Mapped[int]:
+    return mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=index)
 
 
 class RenderMode(str, enum.Enum):
@@ -44,11 +50,45 @@ class TimestampMixin:
     )
 
 
-class Source(TimestampMixin, Base):
-    __tablename__ = "sources"
+class Workspace(TimestampMixin, Base):
+    """A team's private space: its sources, crawls, articles and members.
+
+    The limit columns override the defaults in settings when set (NULL = use the default)."""
+
+    __tablename__ = "workspaces"
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_by_email: Mapped[str | None] = mapped_column(String(320))
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    max_sources: Mapped[int | None] = mapped_column(Integer)
+    max_pages_per_day: Mapped[int | None] = mapped_column(Integer)
+    max_pages_per_crawl: Mapped[int | None] = mapped_column(Integer)
+    min_crawl_interval_minutes: Mapped[int | None] = mapped_column(Integer)
+    max_concurrent_crawls: Mapped[int | None] = mapped_column(Integer)
+    llm_calls_per_day: Mapped[int | None] = mapped_column(Integer)
+    max_members: Mapped[int | None] = mapped_column(Integer)
+
+
+class WorkspaceUsage(Base):
+    """Daily usage counters per workspace (UTC days), used to enforce quotas."""
+
+    __tablename__ = "workspace_usage"
+
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    pages: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    llm_calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    crawls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class Source(TimestampMixin, Base):
+    __tablename__ = "sources"
+    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_sources_workspace_name"),)
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = workspace_fk()
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
     domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     allowed_domains: Mapped[list[str]] = mapped_column(JSONType, default=list, nullable=False)
@@ -75,6 +115,7 @@ class CrawlJob(Base):
     __tablename__ = "crawl_jobs"
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = workspace_fk()
     source_id: Mapped[int] = mapped_column(
         ForeignKey("sources.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -102,11 +143,13 @@ class Page(Base):
     """Every URL the crawler fetched: HTTP cache validators and failure bookkeeping."""
 
     __tablename__ = "pages"
+    __table_args__ = (UniqueConstraint("workspace_id", "url_hash", name="uq_pages_workspace_url"),)
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = workspace_fk(index=False)
     source_id: Mapped[int | None] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), index=True)
     url: Mapped[str] = mapped_column(Text, nullable=False)
-    url_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    url_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status_code: Mapped[int | None] = mapped_column(Integer)
     etag: Mapped[str | None] = mapped_column(String(512))
     last_modified: Mapped[str | None] = mapped_column(String(128))
@@ -123,10 +166,11 @@ class Article(TimestampMixin, Base):
     __tablename__ = "articles"
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = workspace_fk(index=False)
     source_id: Mapped[int | None] = mapped_column(ForeignKey("sources.id", ondelete="SET NULL"), index=True)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
-    canonical_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    canonical_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     body: Mapped[str | None] = mapped_column(Text)
@@ -154,7 +198,11 @@ class Article(TimestampMixin, Base):
     )
     extra: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, nullable=False)
 
-    __table_args__ = (Index("ix_articles_source_published", "source_id", "published_at"),)
+    __table_args__ = (
+        Index("ix_articles_source_published", "source_id", "published_at"),
+        Index("ix_articles_workspace_published", "workspace_id", "published_at"),
+        UniqueConstraint("workspace_id", "canonical_hash", name="uq_articles_workspace_canonical"),
+    )
 
 
 class RawDocument(Base):
@@ -178,14 +226,19 @@ class MemberRole(str, enum.Enum):
 
 
 class Member(TimestampMixin, Base):
-    """A person allowed to use Newsforge. Identity comes from Supabase Auth; access from here."""
+    """A person's access to one workspace. Identity comes from Supabase Auth; access from here."""
 
     __tablename__ = "members"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "email", name="uq_members_workspace_email"),
+        UniqueConstraint("workspace_id", "user_id", name="uq_members_workspace_user"),
+    )
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
-    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
+    workspace_id: Mapped[int] = workspace_fk()
+    email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
     # Supabase auth user id; filled in the first time the invited person signs in.
-    user_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     role: Mapped[str] = mapped_column(String(16), default=MemberRole.viewer.value, nullable=False)
     invited_by: Mapped[str | None] = mapped_column(String(320))
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
