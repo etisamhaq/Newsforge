@@ -14,6 +14,8 @@ import type {
   Source,
   SourceInput,
   Stats,
+  WorkspaceSummary,
+  WorkspaceUsage,
 } from './types'
 
 // Empty means same origin (the nginx container proxies /api to the backend).
@@ -66,6 +68,33 @@ export function clearKey(): void {
   }
 }
 
+// --- current workspace ------------------------------------------------------------
+// Sent as X-Workspace-Id on every request; remembered per browser.
+
+const WS_STORAGE = 'newsforge.workspace'
+let workspaceId: number | null = (() => {
+  try {
+    const v = Number(localStorage.getItem(WS_STORAGE))
+    return Number.isInteger(v) && v > 0 ? v : null
+  } catch {
+    return null
+  }
+})()
+
+export function getWorkspaceId(): number | null {
+  return workspaceId
+}
+
+export function setWorkspaceId(id: number | null): void {
+  workspaceId = id
+  try {
+    if (id) localStorage.setItem(WS_STORAGE, String(id))
+    else localStorage.removeItem(WS_STORAGE)
+  } catch {
+    /* ignore */
+  }
+}
+
 let unauthorizedHandler: (() => void) | null = null
 export function onUnauthorized(handler: () => void): void {
   unauthorizedHandler = handler
@@ -114,6 +143,7 @@ export async function request<T>(
     const key = options.key ?? getStoredKey()
     if (key) headers['X-API-Key'] = key
   }
+  if (workspaceId) headers['X-Workspace-Id'] = String(workspaceId)
   if (options.body !== undefined) headers['Content-Type'] = 'application/json'
 
   let res: Response
@@ -148,6 +178,10 @@ export async function request<T>(
 export const api = {
   verifyKey: (key: string) => request<Me>('GET', '/api/v1/me', { key }),
   me: () => request<Me>('GET', '/api/v1/me'),
+  createWorkspace: (name: string) => request<WorkspaceSummary>('POST', '/api/v1/workspaces', { body: { name } }),
+  workspace: () => request<WorkspaceUsage>('GET', '/api/v1/workspace'),
+  renameWorkspace: (name: string) => request<WorkspaceSummary>('PATCH', '/api/v1/workspace', { body: { name } }),
+  deleteWorkspace: (confirmName: string) => request<void>('DELETE', '/api/v1/workspace', { body: { confirm_name: confirmName } }),
   members: () => request<Member[]>('GET', '/api/v1/members'),
   inviteMember: (body: { email: string; role: RoleName }) => request<Member>('POST', '/api/v1/members', { body }),
   changeRole: (id: number, role: RoleName) => request<Member>('PATCH', `/api/v1/members/${id}`, { body: { role } }),

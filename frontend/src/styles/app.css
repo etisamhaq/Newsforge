@@ -1985,3 +1985,105 @@ input[type='checkbox'] {
   padding: 2px var(--space-2);
   font-size: var(--t-sm);
 }
+
+.rail-workspace .ws-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ws-switcher label {
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+}
+
+.ws-switcher select {
+  min-height: 36px;
+  font-weight: 600;
+}
+
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: var(--space-4);
+  margin: var(--space-3) 0 0;
+}
+
+.usage-item {
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+}
+
+.usage-item dt {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.usage-item dd {
+  margin: var(--space-2) 0 0;
+}
+
+.usage-numbers {
+  font-size: var(--t-xl);
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-numbers .muted {
+  font-size: var(--t-sm);
+  font-weight: 500;
+}
+
+.usage-bar {
+  height: 6px;
+  margin-top: var(--space-2);
+  border-radius: 3px;
+  background: var(--surface-sunk);
+  overflow: hidden;
+}
+
+.usage-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.usage-bar.is-high span {
+  background: var(--warn);
+}
+
+.usage-bar.is-full span {
+  background: var(--bad);
+}
+
+.danger-zone {
+  padding: var(--space-5);
+  border: 1px solid var(--bad);
+  border-radius: var(--radius-m);
+  max-width: 720px;
+}
+
+.danger-zone p {
+  margin-top: var(--space-2);
+  color: var(--ink-2);
+}
+
+.inline-form {
+  display: flex;
+  gap: var(--space-2);
+  max-width: 520px;
+  margin-top: var(--space-3);
+}
+
+@media (max-width: 860px) {
+  .rail .rail-workspace {
+    display: none;
+  }
+
+  .rail.is-open .rail-workspace {
+    display: block;
+    margin-top: var(--space-4);
+  }
+}

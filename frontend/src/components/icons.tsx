@@ -123,3 +123,9 @@ export const IconTeam = (p: IconProps) => (
     <path d="M2.5 19.5c.8-3.4 3.4-5.5 6.5-5.5s5.7 2.1 6.5 5.5M16 4.8a3.5 3.5 0 0 1 0 6.4M18.5 14.4c1.5.9 2.6 2.7 3 5.1" />
   </Icon>
 )
+export const IconWorkspace = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3.5" y="5" width="17" height="14" rx="2" />
+    <path d="M3.5 9.5h17M8 5v4.5" />
+  </Icon>
+)

@@ -3,7 +3,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { useAuth } from './lib/auth'
 import { Layout } from './components/Layout'
 import { Spinner } from './components/ui'
-import { AuthLoading, Login, NoAccess, SetNewPassword } from './pages/Login'
+import { AuthLoading, Login, NoWorkspace, SetNewPassword } from './pages/Login'
 import { Dashboard } from './pages/Dashboard'
 import { NotFound } from './pages/NotFound'
 
@@ -16,13 +16,14 @@ const Articles = lazy(() => import('./pages/Articles').then((m) => ({ default: m
 const ArticleDetail = lazy(() => import('./pages/ArticleDetail').then((m) => ({ default: m.ArticleDetail })))
 const Debugger = lazy(() => import('./pages/Debugger').then((m) => ({ default: m.Debugger })))
 const Team = lazy(() => import('./pages/Team').then((m) => ({ default: m.Team })))
+const WorkspacePage = lazy(() => import('./pages/Workspace').then((m) => ({ default: m.WorkspacePage })))
 
 export function App() {
   const { status } = useAuth()
   if (status === 'loading') return <AuthLoading />
   if (status === 'signedOut') return <Login />
   if (status === 'recovery') return <SetNewPassword />
-  if (status === 'noAccess') return <NoAccess />
+  if (status === 'noWorkspace') return <NoWorkspace />
   return (
     <BrowserRouter>
       <Suspense fallback={<Spinner />}>
@@ -37,6 +38,7 @@ export function App() {
             <Route path="articles/:id" element={<ArticleDetail />} />
             <Route path="debug" element={<Debugger />} />
             <Route path="team" element={<Team />} />
+            <Route path="workspace" element={<WorkspacePage />} />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

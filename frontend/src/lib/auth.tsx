@@ -1,20 +1,27 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Session } from '@supabase/supabase-js'
-import { api, ApiError, clearKey, getStoredKey, onUnauthorized, storeKey } from './api'
+import { api, clearKey, getStoredKey, getWorkspaceId, onUnauthorized, setWorkspaceId, storeKey } from './api'
 import { appUrl, authMode, supabase } from './supabase'
-import type { Me, RoleName } from './types'
+import type { Me, RoleName, WorkspaceSummary } from './types'
 
 const RANK: Record<RoleName, number> = { viewer: 1, editor: 2, admin: 3 }
 
-export type AuthStatus = 'loading' | 'signedOut' | 'recovery' | 'noAccess' | 'ready'
+export type AuthStatus = 'loading' | 'signedOut' | 'recovery' | 'noWorkspace' | 'ready'
 
 interface AuthState {
   mode: typeof authMode
   status: AuthStatus
   me: Me | null
-  /** Email of the signed-in person (also known when they have no access yet). */
+  /** Email of the signed-in person. */
   email: string | null
+  /** The workspace every request is about, and the person's role in it. */
+  workspace: WorkspaceSummary | null
+  workspaces: WorkspaceSummary[]
+  switchWorkspace: (id: number) => void
+  createWorkspace: (name: string) => Promise<WorkspaceSummary>
+  /** Re-read memberships (after renaming, deleting or leaving a workspace). */
+  refreshWorkspaces: () => Promise<void>
   expired: boolean
   can: (role: RoleName) => boolean
   signIn: (email: string, password: string) => Promise<void>
@@ -45,6 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [recovery, setRecovery] = useState(false)
   const [apiKey, setApiKey] = useState<string | null>(() => (authMode === 'apikey' ? getStoredKey() : null))
   const [expired, setExpired] = useState(false)
+  const [selectedId, setSelectedId] = useState<number | null>(() => getWorkspaceId())
 
   useEffect(() => {
     if (!supabase) return
@@ -71,6 +79,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     if (supabase) await supabase.auth.signOut()
     clearKey()
+    setWorkspaceId(null)
+    setSelectedId(null)
     setApiKey(null)
     setRecovery(false)
     queryClient.clear()
@@ -83,6 +93,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
   }, [signOut])
 
+  const workspaces = useMemo(() => meQuery.data?.workspaces ?? [], [meQuery.data])
+  const workspace = workspaces.find((w) => w.id === selectedId) ?? workspaces[0] ?? null
+
+  // Keep the request header in step with the workspace on screen.
+  if (workspace && getWorkspaceId() !== workspace.id) setWorkspaceId(workspace.id)
+
   const status: AuthStatus = !sessionLoaded
     ? 'loading'
     : recovery
@@ -90,12 +106,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       : !identity
         ? 'signedOut'
         : meQuery.data
-          ? 'ready'
-          : meQuery.error instanceof ApiError && meQuery.error.status === 403
-            ? 'noAccess'
-            : meQuery.error
-              ? 'signedOut'
-              : 'loading'
+          ? workspace
+            ? 'ready'
+            : 'noWorkspace'
+          : meQuery.error
+            ? 'signedOut'
+            : 'loading'
+
+  const switchWorkspace = useCallback(
+    (id: number) => {
+      setWorkspaceId(id)
+      setSelectedId(id)
+      // Drop everything cached for the previous workspace; screens refetch for the new one.
+      queryClient.removeQueries({ predicate: (q) => q.queryKey[0] !== 'me' })
+    },
+    [queryClient],
+  )
+
+  const refreshWorkspaces = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ['me'] })
+  }, [queryClient])
+
+  const createWorkspace = useCallback(
+    async (name: string) => {
+      const ws = await api.createWorkspace(name)
+      await queryClient.invalidateQueries({ queryKey: ['me'] })
+      switchWorkspace(ws.id)
+      return ws
+    },
+    [queryClient, switchWorkspace],
+  )
 
   const signIn = useCallback(async (email: string, password: string) => {
     if (!supabase) throw new Error('Account sign-in is not configured.')
@@ -142,8 +182,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       me,
       email: me?.email ?? session?.user.email ?? null,
+      workspace,
+      workspaces,
+      switchWorkspace,
+      createWorkspace,
+      refreshWorkspaces,
       expired,
-      can: (role) => (me ? RANK[me.role] >= RANK[role] : false),
+      can: (role) => (workspace ? RANK[workspace.role] >= RANK[role] : false),
       signIn,
       signUp,
       sendPasswordReset,
@@ -151,7 +196,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signInWithKey,
       signOut,
     }),
-    [status, me, session, expired, signIn, signUp, sendPasswordReset, updatePassword, signInWithKey, signOut],
+    [status, me, session, workspace, workspaces, switchWorkspace, createWorkspace, refreshWorkspaces, expired,
+     signIn, signUp, sendPasswordReset, updatePassword, signInWithKey, signOut],
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

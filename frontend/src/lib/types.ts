@@ -2,10 +2,34 @@
 
 export type RoleName = 'viewer' | 'editor' | 'admin'
 
+export interface WorkspaceSummary {
+  id: number
+  name: string
+  role: RoleName
+  owned: boolean
+}
+
 export interface Me {
   email: string | null
-  role: RoleName
   via: 'user' | 'api_key' | 'open'
+  workspaces: WorkspaceSummary[]
+}
+
+export interface WorkspaceLimits {
+  max_sources: number
+  max_pages_per_day: number
+  max_pages_per_crawl: number
+  min_crawl_interval_minutes: number
+  max_concurrent_crawls: number
+  llm_calls_per_day: number
+  max_members: number
+}
+
+export interface WorkspaceUsage {
+  workspace: WorkspaceSummary
+  limits: WorkspaceLimits
+  today: { pages: number; llm_calls: number; crawls: number }
+  counts: { sources: number; members: number; active_crawls: number }
 }
 
 export interface Member {

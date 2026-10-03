@@ -243,18 +243,40 @@ export function SetNewPassword() {
   )
 }
 
-export function NoAccess() {
-  const { email, signOut } = useAuth()
+export function NoWorkspace() {
+  const { email, signOut, createWorkspace } = useAuth()
+  const [name, setName] = useState('')
+  const { error, busy, run } = useSubmit()
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    void run(async () => {
+      await createWorkspace(name)
+    })
+  }
   return (
     <AuthShell
-      title="You’re not on the team yet"
+      title="Create a workspace"
       intro={
         <>
-          You’re signed in as <strong>{email}</strong>, but an admin hasn’t added this email to Newsforge. Ask an admin to invite it from
-          the Team page, then sign in again.
+          You’re signed in as <strong>{email}</strong> but aren’t in any workspace. Create one to start collecting news, or ask a
+          teammate to invite this email to theirs.
         </>
       }
     >
+      <form onSubmit={submit} className="form">
+        {error && (
+          <p className="notice notice-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="field">
+          <label htmlFor="ws-name">Workspace name</label>
+          <input id="ws-name" required maxLength={100} value={name} onChange={(e) => setName(e.target.value)} placeholder="Newsroom" />
+        </div>
+        <button type="submit" className="btn btn-primary btn-block" disabled={busy || !name.trim()}>
+          {busy ? 'Creating…' : 'Create workspace'}
+        </button>
+      </form>
       <button type="button" className="btn btn-quiet btn-block auth-note" onClick={() => void signOut()}>
         Sign out
       </button>
